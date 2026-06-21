@@ -123,10 +123,11 @@ class HtmlRenderer:
         </script>
         """
 
-        # 주피터 노트북에 HTML 렌더링 시도 (RequireJS 충돌 방지를 위해 iframe srcdoc 샌드박스로 격리 렌더링)
-        escaped_html = html.replace('"', '&quot;')
+        # 주피터 노트북에 HTML 렌더링 시도 (RequireJS 및 특수문자 이스케이프 깨짐 방지를 위해 base64 iframe 격리 렌더링)
+        import base64
+        encoded_html = base64.b64encode(html.encode('utf-8')).decode('utf-8')
         iframe_html = f"""
-        <iframe srcdoc="{escaped_html}" 
+        <iframe src="data:text/html;base64,{encoded_html}" 
                 width="100%" 
                 height="620px" 
                 frameborder="0" 
