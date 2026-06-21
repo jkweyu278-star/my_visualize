@@ -110,7 +110,19 @@ class HtmlRenderer:
             const edges = {edges_json};
 
             // panel.js 와 dag.js를 여기에 인라인 삽입하여 실행
+            
+            // Jupyter/RequireJS AMD 모듈 충돌 방지: define/require를 임시 비활성화하여 D3가 글로벌 d3 객체로 등록되도록 유도
+            var _tempDefine = window.define;
+            var _tempRequire = window.require;
+            window.define = undefined;
+            window.require = undefined;
+
             {d3_content}
+
+            // 로드 완료 후 원래의 RequireJS 복구
+            window.define = _tempDefine;
+            window.require = _tempRequire;
+
             {panel_js}
             {dag_js}
         }})();
