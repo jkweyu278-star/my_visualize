@@ -25,10 +25,12 @@ class HtmlRenderer:
         edges_json = json.dumps(graph_json['edges'])
 
         css_content = self._read_file('style.css')
+        d3_content = self._read_file('d3.v7.min.js')
         dag_js = self._read_file('dag.js')
         panel_js = self._read_file('panel.js')
 
-        # D3가 로드된 상태에서 로직을 실행하도록 IIFE(즉시 실행 함수) 및 동적 로드 사용
+        # D3.js 라이브러리를 CDN에서 받아오지 않고 로컬에서 인라인 번들링하여
+        # VS Code 등의 외부 네트워크(CDN) 차단 환경(CSP)을 완전히 우회합니다.
         html = f"""
         <style>
         {css_content}
@@ -53,31 +55,50 @@ class HtmlRenderer:
         
         <script>
         (function() {{
-            function loadD3(callback) {{
-                if (window.d3) {{
-                    callback();
-                    return;
-                }}
-                var script = document.createElement("script");
-                script.type = "text/javascript";
-                script.src = "https://d3js.org/d3.v7.min.js";
-                script.onload = callback;
-                document.head.appendChild(script);
-            }}
+            // 인라인 D3.js 번들 로드
+            {d3_content}
 
-            loadD3(function() {{
-                const uniqueId = "{unique_id}";
-                const dagPanelId = "dag-panel-{unique_id}";
-                const dataPanelId = "data-panel-{unique_id}";
+            const uniqueId = "{unique_id}";
+            const dagPanelId = "dag-panel-{unique_id}";
+            const dataPanelId = "data-panel-{unique_id}";
 
-                const nodes = {nodes_json};
-                const edges = {edges_json};
+            const nodes = {nodes_json};
+            const edges = {edges_json};
 
-                // panel.js 와 dag.js를 여기에 인라인 삽입하여 실행
-                {panel_js}
-                {dag_js}
-            }});
+            // panel.js 와 dag.js를 여기에 인라인 삽입하여 실행
+            {panel_js}
+            {dag_js}
         }})();
         </script>
         """
+        
+        # 주피터 노트북에 HTML 렌더링 시도
         display(HTML(html))
+
+        # 로컬 파일로 추가 저장 (VS Code 주피터 뷰어에서 인라인 스크립트 실행이 완전 차단될 때를 대비한 폴백)
+        output_filename = "my_visualize_output.html"
+        try:
+            full_page_html = f"""<!DOCTYPE html>
+            <html>
+            <head>
+                <meta charset="utf-8">
+                <title>{title}</title>
+                <style>
+                    body {{
+                        background-color: #0b0f19;
+                        margin: 0;
+                        padding: 20px;
+                        color: #f1f5f9;
+                    }}
+                </style>
+            </head>
+            <body>
+                {html}
+            </body>
+            </html>"""
+            
+            with open(output_filename, 'w', encoding='utf-8') as f:
+                f.write(full_page_html)
+            print(f"[my_visualize] 💾 시각화 결과가 파일로 저장되었습니다: {output_filename} (더블 클릭하여 브라우저/VS Code 탭에서 직접 열어보실 수 있습니다)")
+        except Exception as e:
+            pass
