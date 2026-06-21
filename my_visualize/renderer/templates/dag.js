@@ -166,7 +166,7 @@ function initDAG() {
             <line x1="12" y1="8" x2="12" y2="12"></line>
             <line x1="12" y1="16" x2="12.01" y2="16"></line>
           </svg>
-          <p style="margin:0; font-size:12px; font-weight:600;">DAG 렌더링 오류</p>
+          <p style="margin:0; font-size:12px; font-weight:600;">DAG 렌더링 오류 (버전: ${version})</p>
           <p style="margin:4px 0 0 0; font-size:10px; color:#94a3b8; word-break:break-all; max-width:300px;">
             ${err.message || String(err)}
           </p>

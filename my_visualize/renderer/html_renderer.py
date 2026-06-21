@@ -22,6 +22,8 @@ def _detect_environment() -> str:
 
 
 class HtmlRenderer:
+    VERSION = "v0.1.3-base64"
+
     def __init__(self):
         # templates 디렉토리의 파일들을 읽어서 로드
         self.current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -111,6 +113,7 @@ class HtmlRenderer:
             const uniqueId = "{unique_id}";
             const dagPanelId = "dag-panel-{unique_id}";
             const dataPanelId = "data-panel-{unique_id}";
+            const version = "{self.VERSION}";
 
             const nodes = {nodes_json};
             const edges = {edges_json};
