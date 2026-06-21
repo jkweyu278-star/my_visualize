@@ -22,7 +22,7 @@ def _detect_environment() -> str:
 
 
 class HtmlRenderer:
-    VERSION = "v0.1.4-base64"
+    VERSION = "v0.1.5-base64"
 
     def __init__(self):
         # templates 디렉토리의 파일들을 읽어서 로드
@@ -74,7 +74,32 @@ class HtmlRenderer:
         <div id="viz-container-{unique_id}" class="viz-container">
           <h3 class="viz-title">{title}</h3>
           <div style="display: flex; gap: 16px; flex-wrap: wrap;">
-            <div id="dag-panel-{unique_id}" class="dag-panel" style="flex: 2.2; min-width: 450px; border: 1px solid #1e293b; border-radius: 12px; background: #0b0f19;"></div>
+            <div id="dag-panel-{unique_id}" class="dag-panel" style="position: relative; flex: 2.2; min-width: 450px; border: 1px solid #1e293b; border-radius: 12px; background: #0b0f19;">
+              <!-- 범주(Legend) 좌하단 배치 -->
+              <div class="dag-legend" style="position: absolute; bottom: 12px; left: 12px; background: rgba(15, 23, 42, 0.85); backdrop-filter: blur(4px); border: 1px solid #1e293b; border-radius: 8px; padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; font-size: 11px; color: #94a3b8; z-index: 10; pointer-events: none; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1), 0 2px 4px -1px rgba(0,0,0,0.06); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">
+                <div style="font-weight: 600; color: #f1f5f9; margin-bottom: 2px;">범주 (Node Type)</div>
+                <div style="display: flex; align-items: center; gap: 8px;">
+                  <span style="width: 8px; height: 8px; border-radius: 50%; background: #3b82f6; display: inline-block;"></span>
+                  <span>Input</span>
+                </div>
+                <div style="display: flex; align-items: center; gap: 8px;">
+                  <span style="width: 8px; height: 8px; border-radius: 50%; background: #a855f7; display: inline-block;"></span>
+                  <span>Module (레이어)</span>
+                </div>
+                <div style="display: flex; align-items: center; gap: 8px;">
+                  <span style="width: 8px; height: 8px; border-radius: 50%; background: #10b981; display: inline-block;"></span>
+                  <span>Function (함수)</span>
+                </div>
+                <div style="display: flex; align-items: center; gap: 8px;">
+                  <span style="width: 8px; height: 8px; border-radius: 50%; background: #f59e0b; display: inline-block;"></span>
+                  <span>Method (메서드)</span>
+                </div>
+                <div style="display: flex; align-items: center; gap: 8px;">
+                  <span style="width: 8px; height: 8px; border-radius: 50%; background: #ef4444; display: inline-block;"></span>
+                  <span>Output</span>
+                </div>
+              </div>
+            </div>
             <div id="data-panel-{unique_id}" class="data-panel" style="flex: 1; min-width: 250px; border: 1px solid #1e293b; border-radius: 12px; padding: 16px; background: #0f172a; color: #f1f5f9; max-height: 550px; overflow-y: auto;">
               <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; min-height: 250px; text-align: center; color: #64748b;">
                 <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="margin-bottom: 12px;">
@@ -130,7 +155,7 @@ class HtmlRenderer:
         import base64
         encoded_html = base64.b64encode(html.encode('utf-8')).decode('utf-8')
         iframe_html = f"""
-        <iframe src="data:text/html;base64,{encoded_html}" 
+        <iframe src="data:text/html;charset=utf-8;base64,{encoded_html}" 
                 width="100%" 
                 height="620px" 
                 frameborder="0" 

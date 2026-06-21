@@ -20,7 +20,7 @@ function initDAG() {
     console.log('[my_visualize] DAG 초기화 시작 | 컨테이너 너비:', WIDTH, '| 노드:', nodes.length, '| 엣지:', edges.length);
 
     const HEIGHT = 550;
-    const NODE_W = 130, NODE_H = 45;
+    const NODE_R = 7;
     const arrowId = "arrow-" + uniqueId;
 
     // SVG 캔버스 생성
@@ -38,8 +38,8 @@ function initDAG() {
     svg.append('defs').append('marker')
       .attr('id', arrowId)
       .attr('viewBox', '0 -5 10 10')
-      .attr('refX', 8).attr('refY', 0)
-      .attr('markerWidth', 6).attr('markerHeight', 6)
+      .attr('refX', NODE_R + 6).attr('refY', 0)
+      .attr('markerWidth', 5).attr('markerHeight', 5)
       .attr('orient', 'auto')
       .append('path')
       .attr('d', 'M0,-5L10,0L0,5')
@@ -53,11 +53,11 @@ function initDAG() {
       const group = depthGroups.get(node.depth);
       const idx = group.indexOf(node);
 
-      // X좌표: 깊이에 비례해서 배치
+      // X좌표: 깊이에 비례해서 배치 (원의 중심 기준)
       if (maxDepth === 0) {
-        node.x = WIDTH / 2 - NODE_W / 2;
+        node.x = WIDTH / 2;
       } else {
-        node.x = (node.depth / maxDepth) * (WIDTH - NODE_W - 60) + 30;
+        node.x = (node.depth / maxDepth) * (WIDTH - 80) + 40;
       }
 
       // Y좌표: 해당 깊이의 노드 개수에 맞게 균등 배분
@@ -73,7 +73,7 @@ function initDAG() {
       .attr('class', 'edge')
       .attr('x1', d => {
         const s = nodeMap[d.source];
-        return s ? s.x + NODE_W : 0;
+        return s ? s.x + NODE_R : 0;
       })
       .attr('y1', d => {
         const s = nodeMap[d.source];
@@ -81,7 +81,7 @@ function initDAG() {
       })
       .attr('x2', d => {
         const t = nodeMap[d.target];
-        return t ? t.x : 0;
+        return t ? t.x - NODE_R : 0;
       })
       .attr('y2', d => {
         const t = nodeMap[d.target];
@@ -96,58 +96,50 @@ function initDAG() {
         return (t && t.op_type === 'output') ? '4 4' : 'none';
       });
 
-    // 노드 렌더링
+    // 노드 렌더링 (원형 노드로 변경)
     const nodeGroups = g.selectAll('.node')
       .data(nodes)
       .join('g')
       .attr('class', 'node')
-      .attr('transform', d => `translate(${d.x}, ${d.y - NODE_H / 2})`)
+      .attr('transform', d => `translate(${d.x}, ${d.y})`)
       .style('cursor', 'pointer')
       .on('click', (e, d) => {
         // 이전 선택 취소하고 현재 선택 강조
-        g.selectAll('.node rect').attr('stroke', '#334155').attr('stroke-width', 1.5);
-        d3.select(e.currentTarget).select('rect').attr('stroke', '#c084fc').attr('stroke-width', 2.5);
+        g.selectAll('.node circle').attr('stroke', '#334155').attr('stroke-width', 1.5).attr('r', NODE_R);
+        d3.select(e.currentTarget).select('circle').attr('stroke', '#c084fc').attr('stroke-width', 2.5).attr('r', 10);
         showDataPanel(d);
       })
       .on('mouseover', function(e, d) {
-        const rect = d3.select(this).select('rect');
-        if (rect.attr('stroke') !== '#c084fc') {
-          rect.attr('stroke', '#818cf8').attr('stroke-width', 2);
+        const circle = d3.select(this).select('circle');
+        if (circle.attr('stroke') !== '#c084fc') {
+          circle.attr('stroke', '#818cf8').attr('stroke-width', 2).attr('r', 10);
+        } else {
+          circle.attr('r', 10);
         }
       })
       .on('mouseout', function(e, d) {
-        const rect = d3.select(this).select('rect');
-        if (rect.attr('stroke') !== '#c084fc') {
-          rect.attr('stroke', '#334155').attr('stroke-width', 1.5);
+        const circle = d3.select(this).select('circle');
+        if (circle.attr('stroke') !== '#c084fc') {
+          circle.attr('stroke', '#334155').attr('stroke-width', 1.5).attr('r', NODE_R);
+        } else {
+          circle.attr('r', NODE_R);
         }
       });
 
-    // 노드 박스
-    nodeGroups.append('rect')
-      .attr('width', NODE_W)
-      .attr('height', NODE_H)
-      .attr('rx', 8)
+    // 원형 노드 추가
+    nodeGroups.append('circle')
+      .attr('r', NODE_R)
       .attr('fill', d => getNodeColor(d.op_type))
       .attr('stroke', '#334155')
-      .attr('stroke-width', 1.5);
+      .attr('stroke-width', 1.5)
+      .style('transition', 'r 0.15s ease, stroke-width 0.15s ease');
 
-    // 노드 라벨 (이름)
-    nodeGroups.append('text')
-      .attr('x', NODE_W / 2).attr('y', 18)
-      .attr('text-anchor', 'middle')
-      .attr('fill', '#f1f5f9')
-      .attr('font-size', 11)
-      .attr('font-weight', 600)
-      .text(d => d.name.length > 16 ? d.name.slice(0, 14) + '…' : d.name);
-
-    // 노드 shape 표시
-    nodeGroups.append('text')
-      .attr('x', NODE_W / 2).attr('y', 33)
-      .attr('text-anchor', 'middle')
-      .attr('fill', '#94a3b8')
-      .attr('font-size', 9)
-      .attr('font-family', 'monospace')
-      .text(d => d.output_shape ? `[${d.output_shape.join('×')}]` : '[]');
+    // 마우스 호버 시 보여줄 상세 툴팁 지정 (네이티브 SVG 툴팁)
+    nodeGroups.append('title')
+      .text(d => {
+        const shapeStr = d.output_shape ? `[${d.output_shape.join('×')}]` : '[]';
+        return `${d.name}\n종류: ${d.op_type}\n대상: ${d.target}\n크기: ${shapeStr}`;
+      });
 
     console.log('[my_visualize] ✅ DAG 렌더링 완료 | 노드:', nodes.length, '| 엣지:', edges.length);
 
@@ -175,16 +167,16 @@ function initDAG() {
   }
 }
 
-// 색상 매핑
+// 색상 매핑 (선명한 네온 컬러)
 function getNodeColor(opType) {
   const colors = {
-    'input':          '#1e3a8a',
-    'call_module':    '#4c1d95',
-    'call_function':  '#064e3b',
-    'call_method':    '#78350f',
-    'output':         '#881337',
+    'input':          '#3b82f6',
+    'call_module':    '#a855f7',
+    'call_function':  '#10b981',
+    'call_method':    '#f59e0b',
+    'output':         '#ef4444',
   };
-  return colors[opType] || '#1f2937';
+  return colors[opType] || '#64748b';
 }
 
 // DOM paint 보장 후 실행:
