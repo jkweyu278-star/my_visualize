@@ -4,6 +4,23 @@ import uuid
 from typing import Dict
 from IPython.display import display, HTML
 
+
+def _detect_environment() -> str:
+    """실행 환경 감지 (Colab / VS Code / 일반 Jupyter)"""
+    try:
+        import google.colab  # noqa: F401
+        return "colab"
+    except ImportError:
+        pass
+
+    # VS Code Jupyter 감지
+    if os.environ.get("VSCODE_PID") or os.environ.get("TERM_PROGRAM") == "vscode":
+        return "vscode"
+
+    # 일반 Jupyter 환경
+    return "jupyter"
+
+
 class HtmlRenderer:
     def __init__(self):
         # templates 디렉토리의 파일들을 읽어서 로드
@@ -18,6 +35,12 @@ class HtmlRenderer:
         return ""
 
     def render(self, graph_json: Dict, title: str = "Data Flow Visualization"):
+        env = _detect_environment()
+        node_count = len(graph_json.get('nodes', []))
+        edge_count = len(graph_json.get('edges', []))
+
+        print(f"[my_visualize] 🎨 렌더링 시작 | 환경: {env} | 노드: {node_count}개 | 엣지: {edge_count}개")
+
         # 고유 ID 생성 (페이지 내 다중 위젯 충돌 방지)
         unique_id = f"viz_{uuid.uuid4().hex[:8]}"
 
@@ -34,8 +57,12 @@ class HtmlRenderer:
         html = f"""
         <style>
         {css_content}
+        @keyframes fadeIn {{
+          from {{ opacity: 0; transform: translateY(4px); }}
+          to   {{ opacity: 1; transform: translateY(0); }}
+        }}
         </style>
-        
+
         <div id="viz-container-{unique_id}" class="viz-container">
           <h3 class="viz-title">{title}</h3>
           <div style="display: flex; gap: 16px; flex-wrap: wrap;">
@@ -48,15 +75,32 @@ class HtmlRenderer:
                   <line x1="12" y1="8" x2="12.01" y2="8"></line>
                 </svg>
                 <p style="margin: 0; font-size: 13px;">노드를 클릭하면<br>실제 입출력 텐서의 시각화와 통계가 표시됩니다.</p>
+                <p style="margin: 8px 0 0 0; font-size: 10px; color: #475569;">환경: {env} | 노드: {node_count}개</p>
               </div>
             </div>
           </div>
         </div>
-        
+
         <script>
         (function() {{
-            // 인라인 D3.js 번들 로드
-            {d3_content}
+            // 글로벌 JS 오류 핸들러: 오류 발생 시 data-panel에 표시
+            var _origOnerror = window.onerror;
+            window.onerror = function(msg, src, line, col, err) {{
+                console.error('[my_visualize] 전역 JS 오류 캡처 | ' + msg + ' @ ' + src + ':' + line);
+                var panel = document.getElementById("data-panel-{unique_id}");
+                if (panel) {{
+                    panel.innerHTML = '<div style="color:#f87171; padding:16px; font-size:12px;">' +
+                        '<strong>⚠️ JS 렌더링 오류 발생</strong><br><br>' +
+                        '<span style="color:#94a3b8;">' + msg + '</span><br>' +
+                        '<span style="color:#475569; font-size:10px;">' + src + ':' + line + ':' + col + '</span>' +
+                        '</div>';
+                }}
+                if (typeof _origOnerror === 'function') _origOnerror(msg, src, line, col, err);
+                return false;
+            }};
+
+            // 환경 정보 콘솔 출력
+            console.log('[my_visualize] 실행 환경:', '{env}', '| 고유 ID:', '{unique_id}');
 
             const uniqueId = "{unique_id}";
             const dagPanelId = "dag-panel-{unique_id}";
@@ -66,17 +110,19 @@ class HtmlRenderer:
             const edges = {edges_json};
 
             // panel.js 와 dag.js를 여기에 인라인 삽입하여 실행
+            {d3_content}
             {panel_js}
             {dag_js}
         }})();
         </script>
         """
-        
+
         # 주피터 노트북에 HTML 렌더링 시도
         display(HTML(html))
+        print(f"[my_visualize] ✅ 렌더링 완료 | 환경: {env}")
 
         # 로컬 파일로 추가 저장 (VS Code 주피터 뷰어에서 인라인 스크립트 실행이 완전 차단될 때를 대비한 폴백)
-        output_filename = "my_visualize_output.html"
+        output_filename = os.path.join(os.getcwd(), "my_visualize_output.html")
         try:
             full_page_html = f"""<!DOCTYPE html>
             <html>
@@ -96,9 +142,10 @@ class HtmlRenderer:
                 {html}
             </body>
             </html>"""
-            
+
             with open(output_filename, 'w', encoding='utf-8') as f:
                 f.write(full_page_html)
-            print(f"[my_visualize] 💾 시각화 결과가 파일로 저장되었습니다: {output_filename} (더블 클릭하여 브라우저/VS Code 탭에서 직접 열어보실 수 있습니다)")
+            print(f"[my_visualize] 💾 폴백 HTML 저장: {output_filename}")
+            print(f"[my_visualize]    → 브라우저에서 직접 열거나 VS Code '파일 열기'로 확인 가능")
         except Exception as e:
-            pass
+            print(f"[my_visualize] ⚠️ 파일 저장 실패: {e}")
