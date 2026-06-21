@@ -50,23 +50,32 @@ sys.modules['IPython.display'] = MockIPython.display
 
 from my_visualize import my_visualize
 
-# Define 1-layer MLP
-class OneLayerMLP(nn.Module):
+# Define nested MLP for grouping test
+class Block(nn.Module):
     def __init__(self):
         super().__init__()
-        self.fc = nn.Linear(10, 5)
-        self.relu = nn.ReLU()
+        self.conv = nn.Linear(10, 10)
+        self.act = nn.ReLU()
 
     def forward(self, x):
-        return self.relu(self.fc(x))
+        return self.act(self.conv(x))
+
+class NestedMLP(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.layer1 = Block()
+        self.layer2 = Block()
+
+    def forward(self, x):
+        return self.layer2(self.layer1(x))
 
 def main():
-    print("Step 1: Running 1-layer MLP and tracing it...")
-    model = OneLayerMLP()
+    print("Step 1: Running Nested MLP and tracing it...")
+    model = NestedMLP()
     x = torch.randn(2, 10)
     
     # Trace model (will output index.html via mock IPython)
-    my_visualize(model, title="1-Layer MLP Localhost Test", x=x)
+    my_visualize(model, title="Nested MLP Grouping Localhost Test", x=x)
     
     # Start web server
     port = 8080
