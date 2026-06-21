@@ -1,0 +1,53 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+#viz-container {
+  font-family: 'Inter', sans-serif;
+  background-color: #0b0f19;
+  padding: 24px;
+  border-radius: 12px;
+  box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.3), 0 4px 6px -4px rgba(0, 0, 0, 0.3);
+}
+
+.viz-title {
+  margin: 0 0 16px 0;
+  font-size: 1.5rem;
+  font-weight: 700;
+  background: linear-gradient(135deg, #818cf8 0%, #c084fc 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+#dag-panel {
+  box-shadow: inset 0 2px 4px 0 rgba(0, 0, 0, 0.5);
+  position: relative;
+  overflow: hidden;
+}
+
+#data-panel {
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+  font-size: 0.875rem;
+}
+
+/* Scrollbars */
+#data-panel::-webkit-scrollbar {
+  width: 6px;
+}
+#data-panel::-webkit-scrollbar-track {
+  background: #1e293b;
+}
+#data-panel::-webkit-scrollbar-thumb {
+  background: #475569;
+  border-radius: 3px;
+}
+
+/* D3 SVG styles */
+.node rect {
+  transition: filter 0.2s ease, stroke 0.2s ease;
+  filter: drop-shadow(0 4px 6px rgba(0, 0, 0, 0.15));
+}
+.node:hover rect {
+  filter: drop-shadow(0 0 8px rgba(99, 102, 241, 0.5));
+}
+.edge {
+  transition: stroke 0.2s ease, stroke-width 0.2s ease;
+}
