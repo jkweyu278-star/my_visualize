@@ -22,7 +22,7 @@ def _detect_environment() -> str:
 
 
 class HtmlRenderer:
-    VERSION = "v0.1.5-base64"
+    VERSION = "v0.1.6-base64"
 
     def __init__(self):
         # templates 디렉토리의 파일들을 읽어서 로드

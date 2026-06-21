@@ -66,6 +66,56 @@ function initDAG() {
 
     const nodeMap = Object.fromEntries(nodes.map(n => [n.id, n]));
 
+    // 그룹 바운딩 박스(Bounding Box) 계산 및 렌더링
+    const groups = d3.groups(nodes.filter(n => getNodeGroup(n.id) !== null), n => getNodeGroup(n.id))
+      .filter(([key, groupNodes]) => groupNodes.length > 1);
+
+    const padding = 15;
+    const groupBounds = groups.map(([key, groupNodes]) => {
+      const xs = groupNodes.map(n => n.x);
+      const ys = groupNodes.map(n => n.y);
+      const minX = Math.min(...xs);
+      const maxX = Math.max(...xs);
+      const minY = Math.min(...ys);
+      const maxY = Math.max(...ys);
+
+      return {
+        key: key,
+        label: getGroupLabel(key),
+        x: minX - padding,
+        y: minY - padding - 8,
+        width: (maxX - minX) + 2 * padding,
+        height: (maxY - minY) + 2 * padding + 8
+      };
+    });
+
+    const groupG = g.append('g').attr('class', 'groups');
+
+    const groupElements = groupG.selectAll('.group-container')
+      .data(groupBounds)
+      .join('g')
+      .attr('class', 'group-container');
+
+    groupElements.append('rect')
+      .attr('x', d => d.x)
+      .attr('y', d => d.y)
+      .attr('width', d => d.width)
+      .attr('height', d => d.height)
+      .attr('rx', 8)
+      .attr('fill', 'rgba(30, 41, 59, 0.15)')
+      .attr('stroke', 'rgba(129, 140, 248, 0.25)')
+      .attr('stroke-width', 1.5)
+      .attr('stroke-dasharray', '4 4');
+
+    groupElements.append('text')
+      .attr('x', d => d.x + 8)
+      .attr('y', d => d.y + 12)
+      .attr('fill', '#818cf8')
+      .attr('font-size', 9)
+      .attr('font-weight', 600)
+      .attr('font-family', 'sans-serif')
+      .text(d => d.label.toUpperCase());
+
     // 엣지(연결선) 렌더링
     g.selectAll('.edge')
       .data(edges)
@@ -177,6 +227,35 @@ function getNodeColor(opType) {
     'output':         '#ef4444',
   };
   return colors[opType] || '#64748b';
+}
+
+// 상위 모듈 그룹 탐지 헬퍼
+function getNodeGroup(nodeId) {
+  if (!nodeId) return null;
+  // 1. layers.N, layer.N, h.N, block.N 등 레이어 패턴 매칭
+  const match = nodeId.match(/^(.*?\b(layers?|h|block|blk)\.\d+)/i);
+  if (match) {
+    return match[1];
+  }
+  // 2. 일반 계층 구조인 경우 첫 3개 세그먼트를 그룹으로 사용
+  const parts = nodeId.split('.');
+  if (parts.length > 2) {
+    return parts.slice(0, 3).join('.');
+  }
+  return null;
+}
+
+// 그룹 키를 인간 친화적인 라벨로 단순화
+function getGroupLabel(groupKey) {
+  const parts = groupKey.split('.');
+  if (parts.length >= 2) {
+    for (let i = 0; i < parts.length; i++) {
+      if (/^(layers?|h|block|blk|layer)$/i.test(parts[i]) && i + 1 < parts.length) {
+        return parts[i] + '.' + parts[i+1];
+      }
+    }
+  }
+  return parts.slice(-2).join('.');
 }
 
 // DOM paint 보장 후 실행:
