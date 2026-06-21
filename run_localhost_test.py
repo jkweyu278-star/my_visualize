@@ -6,7 +6,7 @@ from http.server import SimpleHTTPRequestHandler
 import socketserver
 
 # Add my_visualize path to python path
-sys.path.append('/Users/imjunhyeong/Projects')
+sys.path.append('/Users/imjunhyeong/Projects/my_visualize')
 
 # Mock IPython display to intercept HTML and save to index.html
 class MockHTML:
