@@ -57,6 +57,12 @@ class HtmlRenderer:
         html = f"""
         <style>
         {css_content}
+        html, body {{
+          background-color: #0b0f19;
+          margin: 0;
+          padding: 0;
+          overflow: hidden;
+        }}
         @keyframes fadeIn {{
           from {{ opacity: 0; transform: translateY(4px); }}
           to   {{ opacity: 1; transform: translateY(0); }}
@@ -110,27 +116,24 @@ class HtmlRenderer:
             const edges = {edges_json};
 
             // panel.js 와 dag.js를 여기에 인라인 삽입하여 실행
-            
-            // Jupyter/RequireJS AMD 모듈 충돌 방지: define/require를 임시 비활성화하여 D3가 글로벌 d3 객체로 등록되도록 유도
-            var _tempDefine = window.define;
-            var _tempRequire = window.require;
-            window.define = undefined;
-            window.require = undefined;
-
             {d3_content}
-
-            // 로드 완료 후 원래의 RequireJS 복구
-            window.define = _tempDefine;
-            window.require = _tempRequire;
-
             {panel_js}
             {dag_js}
         }})();
         </script>
         """
 
-        # 주피터 노트북에 HTML 렌더링 시도
-        display(HTML(html))
+        # 주피터 노트북에 HTML 렌더링 시도 (RequireJS 충돌 방지를 위해 iframe srcdoc 샌드박스로 격리 렌더링)
+        escaped_html = html.replace('"', '&quot;')
+        iframe_html = f"""
+        <iframe srcdoc="{escaped_html}" 
+                width="100%" 
+                height="620px" 
+                frameborder="0" 
+                style="border: none; border-radius: 12px; background: #0b0f19;">
+        </iframe>
+        """
+        display(HTML(iframe_html))
         print(f"[my_visualize] ✅ 렌더링 완료 | 환경: {env}")
 
         # 로컬 파일로 추가 저장 (VS Code 주피터 뷰어에서 인라인 스크립트 실행이 완전 차단될 때를 대비한 폴백)
