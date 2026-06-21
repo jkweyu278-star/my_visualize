@@ -3,7 +3,7 @@
 // ============================================================
 
 function showDataPanel(node) {
-  const panel = document.getElementById('data-panel');
+  const panel = document.getElementById(dataPanelId);
 
   const stats = node.stats || {};
   const statsHtml = Object.entries(stats)

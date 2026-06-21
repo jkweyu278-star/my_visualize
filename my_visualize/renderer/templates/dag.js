@@ -1,14 +1,15 @@
-// ============================================================
 // DAG 시각화 핵심 로직
 // ============================================================
 
-const panelElement = document.getElementById('dag-panel');
+const panelElement = document.getElementById(dagPanelId);
 const WIDTH = panelElement ? (panelElement.clientWidth || 800) : 800;
 const HEIGHT = 550;
 const NODE_W = 130, NODE_H = 45;
 
+const arrowId = "arrow-" + uniqueId;
+
 // SVG 캔버스 생성
-const svg = d3.select('#dag-panel')
+const svg = d3.select('#' + dagPanelId)
   .append('svg')
   .attr('width', '100%')
   .attr('height', HEIGHT)
@@ -20,7 +21,7 @@ const g = svg.append('g');
 
 // 화살표 마커 정의
 svg.append('defs').append('marker')
-  .attr('id', 'arrow')
+  .attr('id', arrowId)
   .attr('viewBox', '0 -5 10 10')
   .attr('refX', 8).attr('refY', 0)
   .attr('markerWidth', 6).attr('markerHeight', 6)
@@ -73,7 +74,7 @@ g.selectAll('.edge')
   })
   .attr('stroke', '#4f46e5')
   .attr('stroke-width', 2)
-  .attr('marker-end', 'url(#arrow)')
+  .attr('marker-end', 'url(#' + arrowId + ')')
   .attr('opacity', 0.5)
   .attr('stroke-dasharray', d => {
     const t = nodeMap[d.target];

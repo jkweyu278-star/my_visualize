@@ -1,5 +1,6 @@
 import os
 import json
+import uuid
 from typing import Dict
 from IPython.display import display, HTML
 
@@ -17,6 +18,9 @@ class HtmlRenderer:
         return ""
 
     def render(self, graph_json: Dict, title: str = "Data Flow Visualization"):
+        # 고유 ID 생성 (페이지 내 다중 위젯 충돌 방지)
+        unique_id = f"viz_{uuid.uuid4().hex[:8]}"
+
         nodes_json = json.dumps(graph_json['nodes'])
         edges_json = json.dumps(graph_json['edges'])
 
@@ -30,11 +34,11 @@ class HtmlRenderer:
         {css_content}
         </style>
         
-        <div id="viz-container">
+        <div id="viz-container-{unique_id}" class="viz-container">
           <h3 class="viz-title">{title}</h3>
           <div style="display: flex; gap: 16px; flex-wrap: wrap;">
-            <div id="dag-panel" style="flex: 2.2; min-width: 450px; border: 1px solid #1e293b; border-radius: 12px; background: #0b0f19;"></div>
-            <div id="data-panel" style="flex: 1; min-width: 250px; border: 1px solid #1e293b; border-radius: 12px; padding: 16px; background: #0f172a; color: #f1f5f9; max-height: 550px; overflow-y: auto;">
+            <div id="dag-panel-{unique_id}" class="dag-panel" style="flex: 2.2; min-width: 450px; border: 1px solid #1e293b; border-radius: 12px; background: #0b0f19;"></div>
+            <div id="data-panel-{unique_id}" class="data-panel" style="flex: 1; min-width: 250px; border: 1px solid #1e293b; border-radius: 12px; padding: 16px; background: #0f172a; color: #f1f5f9; max-height: 550px; overflow-y: auto;">
               <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; min-height: 250px; text-align: center; color: #64748b;">
                 <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="margin-bottom: 12px;">
                   <circle cx="12" cy="12" r="10"></circle>
@@ -62,6 +66,10 @@ class HtmlRenderer:
             }}
 
             loadD3(function() {{
+                const uniqueId = "{unique_id}";
+                const dagPanelId = "dag-panel-{unique_id}";
+                const dataPanelId = "data-panel-{unique_id}";
+
                 const nodes = {nodes_json};
                 const edges = {edges_json};
 
