@@ -1,1 +1,1 @@
-recursive-include my_visualize/my_visualize/renderer/templates *
+recursive-include my_visualize/renderer/templates *
