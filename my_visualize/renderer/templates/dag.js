@@ -60,6 +60,7 @@ function initDAG() {
     // 1-2. 텐서 격자 확장 및 세로 생략(Truncation) 상태 관리용 Set 추가
     const expandedTensors = new Set();
     const fullyExpandedTensors = new Set();
+    let autoAlignEnabled = true;
 
     // 텐서 shape 파서 헬퍼: [W, D, H] 반환
     function parseTensorShape(shape) {
@@ -277,61 +278,101 @@ function initDAG() {
       const shiftX = (totalGraphWidth < (WIDTH - 100)) ? (WIDTH - totalGraphWidth) / 2 - 50 : 0;
 
       // 4-2. Y 좌표 계산: 오믹스/텍스트 병렬 라인을 꺾임 없는 수평 직선으로 배치
-      // 각 브랜치의 최대 수직 높이 구하기
-      let maxOmicsHeight = 0;
-      let maxTextHeight = 0;
-      uniqueDepths.forEach(d => {
-        const group = depthGroups.get(d) || [];
-        const omicsCount = group.filter(n => getBranchGroup(n) === 'omics').length;
-        const textCount = group.filter(n => getBranchGroup(n) === 'text').length;
-        const omicsH = omicsCount > 0 ? (omicsCount - 1) * ROW_SPACING : 0;
-        const textH = textCount > 0 ? (textCount - 1) * ROW_SPACING : 0;
-        if (omicsH > maxOmicsHeight) maxOmicsHeight = omicsH;
-        if (textH > maxTextHeight) maxTextHeight = textH;
-      });
+      if (autoAlignEnabled) {
+        // 각 브랜치의 최대 수직 높이 구하기
+        let maxOmicsHeight = 0;
+        let maxTextHeight = 0;
+        uniqueDepths.forEach(d => {
+          const group = depthGroups.get(d) || [];
+          const omicsCount = group.filter(n => getBranchGroup(n) === 'omics').length;
+          const textCount = group.filter(n => getBranchGroup(n) === 'text').length;
+          const omicsH = omicsCount > 0 ? (omicsCount - 1) * ROW_SPACING : 0;
+          const textH = textCount > 0 ? (textCount - 1) * ROW_SPACING : 0;
+          if (omicsH > maxOmicsHeight) maxOmicsHeight = omicsH;
+          if (textH > maxTextHeight) maxTextHeight = textH;
+        });
 
-      // 병렬 트랙 간 수직 최소 간격 100px 보장을 위한 트랙 중심 이격거리 계산
-      const trackGap = 100 + (maxOmicsHeight + maxTextHeight) / 2;
-      const dynamicHeight = Math.max(HEIGHT, 100 + maxOmicsHeight + maxTextHeight + 100);
-      svg.attr('height', dynamicHeight);
+        // 병렬 트랙 간 수직 최소 간격 100px 보장을 위한 트랙 중심 이격거리 계산
+        const trackGap = 100 + (maxOmicsHeight + maxTextHeight) / 2;
+        const dynamicHeight = Math.max(HEIGHT, 100 + maxOmicsHeight + maxTextHeight + 100);
+        svg.attr('height', dynamicHeight);
 
-      const yMid = dynamicHeight / 2;
-      const yOmics = yMid - trackGap / 2;
-      const yText = yMid + trackGap / 2;
-      const yMerged = yMid;
+        const yMid = dynamicHeight / 2;
+        const yOmics = yMid - trackGap / 2;
+        const yText = yMid + trackGap / 2;
+        const yMerged = yMid;
 
-      // 각 열(Column)별로 브랜치 단위로 Y 좌표 분배 배치
-      uniqueDepths.forEach(d => {
-        const group = depthGroups.get(d) || [];
-        const omicsNodes = group.filter(n => getBranchGroup(n) === 'omics');
-        const textNodes = group.filter(n => getBranchGroup(n) === 'text');
-        const otherNodes = group.filter(n => getBranchGroup(n) === 'other');
+        // 각 열(Column)별로 브랜치 단위로 Y 좌표 분배 배치
+        uniqueDepths.forEach(d => {
+          const group = depthGroups.get(d) || [];
+          const omicsNodes = group.filter(n => getBranchGroup(n) === 'omics');
+          const textNodes = group.filter(n => getBranchGroup(n) === 'text');
+          const otherNodes = group.filter(n => getBranchGroup(n) === 'other');
 
-        const sortBranchNodes = (nodesList) => {
-          nodesList.sort((a, b) => {
+          const sortBranchNodes = (nodesList) => {
+            nodesList.sort((a, b) => {
+              if (a.isSubNode && b.isSubNode) {
+                return a.rowIdx - b.rowIdx;
+              }
+              return a.id.localeCompare(b.id);
+            });
+          };
+          sortBranchNodes(omicsNodes);
+          sortBranchNodes(textNodes);
+          sortBranchNodes(otherNodes);
+
+          const assignBranchY = (nodesList, yCenter) => {
+            const K = nodesList.length;
+            if (K === 0) return;
+            const h = (K - 1) * ROW_SPACING;
+            const startY = yCenter - h / 2;
+            nodesList.forEach((node, idx) => {
+              node.y = startY + idx * ROW_SPACING;
+            });
+          };
+          assignBranchY(omicsNodes, yOmics);
+          assignBranchY(textNodes, yText);
+          assignBranchY(otherNodes, yMerged);
+        });
+      } else {
+        // 기존 디폴트 배치 (컬럼 단위로 세로 중앙 정렬)
+        const colHeights = new Map();
+        uniqueDepths.forEach(d => {
+          const group = depthGroups.get(d) || [];
+          group.sort((a, b) => {
             if (a.isSubNode && b.isSubNode) {
               return a.rowIdx - b.rowIdx;
             }
             return a.id.localeCompare(b.id);
           });
-        };
-        sortBranchNodes(omicsNodes);
-        sortBranchNodes(textNodes);
-        sortBranchNodes(otherNodes);
 
-        const assignBranchY = (nodesList, yCenter) => {
-          const K = nodesList.length;
-          if (K === 0) return;
-          const h = (K - 1) * ROW_SPACING;
-          const startY = yCenter - h / 2;
-          nodesList.forEach((node, idx) => {
-            node.y = startY + idx * ROW_SPACING;
+          let currentY = 0;
+          const coords = [];
+          group.forEach((node, idx) => {
+            if (idx > 0) {
+              const prevNode = group[idx - 1];
+              const prevBranch = getBranchGroup(prevNode);
+              const currBranch = getBranchGroup(node);
+              const gap = (prevBranch !== currBranch && prevBranch !== 'other' && currBranch !== 'other') ? 100 : ROW_SPACING;
+              currentY += gap;
+            }
+            coords.push(currentY);
           });
-        };
-        assignBranchY(omicsNodes, yOmics);
-        assignBranchY(textNodes, yText);
-        assignBranchY(otherNodes, yMerged);
-      });
+          colHeights.set(d, { height: currentY, coords: coords });
+        });
+
+        const maxColHeight = d3.max(Array.from(colHeights.values()), h => h.height) || 0;
+        const dynamicHeight = Math.max(HEIGHT, maxColHeight + 100);
+        svg.attr('height', dynamicHeight);
+
+        activeNodes.forEach(node => {
+          const group = depthGroups.get(node.depth) || [];
+          const idx = group.indexOf(node);
+          const colInfo = colHeights.get(node.depth);
+          const offset = (dynamicHeight - colInfo.height) / 2;
+          node.y = offset + colInfo.coords[idx];
+        });
+      }
 
       // 최종 X 좌표 매핑
       activeNodes.forEach(node => {
@@ -667,6 +708,43 @@ function initDAG() {
           const gridTip = hasGrid ? "\n클릭 시 가로/세로 텐서 격자 확장" : "";
           return `${d.name}\n종류: ${d.op_type}\n대상: ${d.target}\n크기: ${shapeStr}${gridTip}`;
         });
+
+      // 8. 상단 컨트롤 그룹 그리기 (Auto Align 토글 버튼)
+      svg.selectAll('.controls-group').remove();
+      const controlsG = svg.append('g')
+        .attr('class', 'controls-group')
+        .attr('transform', `translate(${WIDTH - 110}, 15)`)
+        .style('cursor', 'pointer')
+        .on('click', (e) => {
+          e.stopPropagation();
+          autoAlignEnabled = !autoAlignEnabled;
+          renderGraph();
+        });
+
+      controlsG.append('rect')
+        .attr('width', 95)
+        .attr('height', 24)
+        .attr('rx', 12)
+        .attr('fill', autoAlignEnabled ? 'rgba(79, 70, 229, 0.15)' : 'rgba(30, 41, 59, 0.6)')
+        .attr('stroke', autoAlignEnabled ? '#818cf8' : '#334155')
+        .attr('stroke-width', 1.2)
+        .style('transition', 'all 0.15s ease');
+
+      controlsG.append('circle')
+        .attr('cx', 12)
+        .attr('cy', 12)
+        .attr('r', 4)
+        .attr('fill', autoAlignEnabled ? '#10b981' : '#64748b');
+
+      controlsG.append('text')
+        .attr('x', 24)
+        .attr('y', 12)
+        .attr('dy', '0.35em')
+        .attr('fill', autoAlignEnabled ? '#a5b4fc' : '#94a3b8')
+        .attr('font-size', '9px')
+        .attr('font-weight', '600')
+        .attr('font-family', 'sans-serif')
+        .text('Auto Align');
     }
 
     // 초기 그래프 렌더링 호출
