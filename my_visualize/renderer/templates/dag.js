@@ -118,21 +118,27 @@ function initDAG() {
       });
       const activeEdges = Array.from(uniqueEdges.values());
 
-      // 4. 활성 노드 기반 depth 레이아웃 계산
+      // 4. 활성 노드 기반 depth 레이아웃 계산 (Flexible Constant Spacing)
+      const DEPTH_SPACING = 150; // 각 단계별 고정 가로 간격
+      
+      // 활성화된 모든 노드들의 고유 depth 값 수집 및 정렬
+      const uniqueDepths = Array.from(new Set(activeNodes.map(d => d.depth))).sort((a, b) => a - b);
+      const totalGraphWidth = (uniqueDepths.length - 1) * DEPTH_SPACING;
+      
+      // 컨테이너 너비(WIDTH)보다 그래프 전체 가로 길이가 작으면 중앙 정렬, 크면 고정 마진 50px에서 시작
+      const startX = (totalGraphWidth < (WIDTH - 100)) ? (WIDTH - totalGraphWidth) / 2 : 50;
+
       const depthGroups = d3.group(activeNodes, d => d.depth);
-      const maxDepth = d3.max(activeNodes, d => d.depth) || 0;
 
       activeNodes.forEach(node => {
         const group = depthGroups.get(node.depth);
         const idx = group.indexOf(node);
 
-        if (maxDepth === 0) {
-          node.x = WIDTH / 2;
-        } else {
-          node.x = (node.depth / maxDepth) * (WIDTH - 80) + 40;
-        }
+        const depthIdx = uniqueDepths.indexOf(node.depth);
+        node.x = startX + (depthIdx * DEPTH_SPACING);
         node.y = (idx + 1) * (HEIGHT / (group.length + 1));
       });
+
 
       const activeNodeMap = Object.fromEntries(activeNodes.map(n => [n.id, n]));
 
