@@ -50,32 +50,45 @@ sys.modules['IPython.display'] = MockIPython.display
 
 from my_visualize import my_visualize
 
-# Define nested MLP for grouping test
-class Block(nn.Module):
+# Define nested MLP for grouping and 3D tensor shape tests
+class Block1(nn.Module):
     def __init__(self):
         super().__init__()
-        self.conv = nn.Linear(10, 10)
+        self.conv = nn.Linear(10, 24)
         self.act = nn.ReLU()
 
     def forward(self, x):
-        return self.act(self.conv(x))
+        out = self.act(self.conv(x))
+        return out.view(2, 3, 8)  # Shape [2, 3, 8] -> W=2, D=3, H=8
+
+class Block2(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.conv = nn.Linear(48, 4000)
+        self.act = nn.ReLU()
+
+    def forward(self, x):
+        # x is [2, 3, 8], we flatten it to [2, 24] or [1, 48]
+        x_flat = x.view(1, 48)
+        out = self.act(self.conv(x_flat))
+        return out.view(1, 4, 1000)  # Shape [1, 4, 1000] -> W=1, D=4, H=1000
 
 class NestedMLP(nn.Module):
     def __init__(self):
         super().__init__()
-        self.layer1 = Block()
-        self.layer2 = Block()
+        self.layer1 = Block1()
+        self.layer2 = Block2()
 
     def forward(self, x):
         return self.layer2(self.layer1(x))
 
 def main():
-    print("Step 1: Running Nested MLP and tracing it...")
+    print("Step 1: Running Nested MLP with 3D outputs and tracing it...")
     model = NestedMLP()
     x = torch.randn(2, 10)
     
     # Trace model (will output index.html via mock IPython)
-    my_visualize(model, title="Nested MLP Grouping Localhost Test", x=x)
+    my_visualize(model, title="3D Tensor Expansion & Truncation Localhost Test (v0.2.0)", x=x)
     
     # Start web server
     port = 8080

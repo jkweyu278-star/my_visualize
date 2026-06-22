@@ -57,13 +57,60 @@ function initDAG() {
       }
     });
 
+    // 1-2. 텐서 격자 확장 및 세로 생략(Truncation) 상태 관리용 Set 추가
+    const expandedTensors = new Set();
+    const fullyExpandedTensors = new Set();
+
+    // 텐서 shape 파서 헬퍼: [W, D, H] 반환
+    function parseTensorShape(shape) {
+      if (!shape || !Array.isArray(shape) || shape.length === 0) {
+        return { w: 1, d: 1, h: 1 };
+      }
+      if (shape.length === 1) {
+        return { w: shape[0], d: 1, h: 1 };
+      }
+      if (shape.length === 2) {
+        return { w: shape[0], d: 1, h: shape[1] };
+      }
+      // 3차원 이상
+      return { w: shape[0], d: shape[1], h: shape[2] };
+    }
+
     const padding = 15;
 
     function renderGraph() {
       // 캔버스 초기화
       g.selectAll('*').remove();
 
-      // 2. 활성 노드 목록 구축
+      // 1. 각 오리지널 depth 레벨이 기여하는 가로 폭 오프셋 계산 (최대 텐서 컬럼 확장 수 반영)
+      const maxDepthVal = d3.max(nodes, n => n.depth) || 0;
+      const levelOffsets = new Map();
+      for (let d = 0; d <= maxDepthVal; d++) {
+        const nodesAtDepth = nodes.filter(n => n.depth === d);
+        let maxOffsetForLevel = 0;
+        nodesAtDepth.forEach(n => {
+          const group = getNodeGroup(n.id);
+          const inCollapsedGroup = group && collapsedGroups.has(group);
+          if (!inCollapsedGroup && expandedTensors.has(n.id)) {
+            const { w } = parseTensorShape(n.output_shape);
+            if (w - 1 > maxOffsetForLevel) {
+              maxOffsetForLevel = w - 1;
+            }
+          }
+        });
+        levelOffsets.set(d, maxOffsetForLevel);
+      }
+
+      // 특정 오리지널 depth의 노드가 위치할 최종 depth 인덱스 계산
+      const getShiftedDepth = (origDepth) => {
+        let shifted = origDepth;
+        for (let d = 0; d < origDepth; d++) {
+          shifted += (levelOffsets.get(d) || 0);
+        }
+        return shifted;
+      };
+
+      // 2. 활성 노드 목록 구축 (격자 확장 및 생략 필터 적용)
       const activeNodes = [];
       const addedCollapsedGroups = new Set();
 
@@ -78,67 +125,157 @@ function initDAG() {
               op_type: 'call_module',
               isGroupNode: true,
               groupKey: group,
-              depth: node.depth,
+              depth: getShiftedDepth(node.depth),
               output_shape: null,
               target: group
             });
           }
           // 가상 노드의 depth를 이 그룹에 속한 최소 depth로 맞춤
           const virtualNode = activeNodes.find(n => n.id === group);
-          if (virtualNode && node.depth < virtualNode.depth) {
-            virtualNode.depth = node.depth;
+          const shiftedDepth = getShiftedDepth(node.depth);
+          if (virtualNode && shiftedDepth < virtualNode.depth) {
+            virtualNode.depth = shiftedDepth;
           }
         } else {
-          activeNodes.push({
-            ...node,
-            isGroupNode: false
-          });
+          // 텐서 확장 모드인 경우
+          if (expandedTensors.has(node.id)) {
+            const { w, d, h } = parseTensorShape(node.output_shape);
+            const shiftedBaseDepth = getShiftedDepth(node.depth);
+
+            for (let c = 0; c < w; c++) {
+              const currentDepth = shiftedBaseDepth + c;
+
+              // 세로 행 목록 생성
+              const rowsToGen = [];
+              if (h <= 10 || fullyExpandedTensors.has(node.id)) {
+                for (let r = 0; r < h; r++) {
+                  rowsToGen.push({ r, type: 'normal' });
+                }
+                if (h > 10 && fullyExpandedTensors.has(node.id)) {
+                  rowsToGen.push({ r: h, type: 'collapse_btn' });
+                }
+              } else {
+                for (let r = 0; r < 5; r++) {
+                  rowsToGen.push({ r, type: 'normal' });
+                }
+                rowsToGen.push({ r: 5, type: 'omitted_btn' });
+                for (let r = h - 5; r < h; r++) {
+                  rowsToGen.push({ r, type: 'normal' });
+                }
+              }
+
+              rowsToGen.forEach(item => {
+                const subNodeId = `${node.id}_col_${c}_row_${item.r}`;
+                activeNodes.push({
+                  id: subNodeId,
+                  parentTensorId: node.id,
+                  name: item.type === 'normal' ? `${node.name}[${c}, ${item.r}]` : '',
+                  op_type: node.op_type,
+                  isSubNode: true,
+                  isOmissionButton: item.type === 'omitted_btn',
+                  isCollapseButton: item.type === 'collapse_btn',
+                  colIdx: c,
+                  rowIdx: item.r,
+                  totalRows: h,
+                  depth: currentDepth,
+                  parsedShape: { w, d, h },
+                  output_shape: node.output_shape,
+                  target: node.target,
+                  stats: node.stats,
+                  heatmap: node.heatmap,
+                  sample: node.sample,
+                  output_dtype: node.output_dtype
+                });
+              });
+            }
+          } else {
+            // 일반 축소 노드
+            activeNodes.push({
+              ...node,
+              depth: getShiftedDepth(node.depth),
+              isGroupNode: false,
+              isSubNode: false,
+              parsedShape: parseTensorShape(node.output_shape)
+            });
+          }
         }
       });
 
-      // 3. 활성 연결선 목록 구축 및 중복 제거
-      const getActiveId = (nodeId) => {
-        const group = getNodeGroup(nodeId);
+      // 3. 활성 연결선 목록 구축 및 라우팅 매핑
+      const getActiveNodeIdsForLink = (origNodeId, first) => {
+        const group = getNodeGroup(origNodeId);
         if (group && collapsedGroups.has(group)) {
-          return group;
+          return [group];
         }
-        return nodeId;
+        if (expandedTensors.has(origNodeId)) {
+          const origNode = nodes.find(n => n.id === origNodeId);
+          if (!origNode) return [origNodeId];
+          const { w } = parseTensorShape(origNode.output_shape);
+          const colIdx = first ? 0 : w - 1;
+
+          const subNodes = activeNodes.filter(an => an.parentTensorId === origNodeId && an.colIdx === colIdx);
+          const validSubNodes = subNodes.filter(an => !an.isOmissionButton && !an.isCollapseButton);
+          if (validSubNodes.length > 0) {
+            return validSubNodes.map(an => an.id);
+          }
+        }
+        return [origNodeId];
       };
 
       const uniqueEdges = new Map();
       edges.forEach(e => {
-        const s = getActiveId(e.source);
-        const t = getActiveId(e.target);
-        if (s !== t) {
-          const key = `${s}->${t}`;
-          if (!uniqueEdges.has(key)) {
-            uniqueEdges.set(key, { source: s, target: t, op_type: e.op_type });
+        const srcs = getActiveNodeIdsForLink(e.source, false);
+        const tgts = getActiveNodeIdsForLink(e.target, true);
+
+        const maxLen = Math.max(srcs.length, tgts.length);
+        for (let i = 0; i < maxLen; i++) {
+          const s = srcs[Math.min(i, srcs.length - 1)];
+          const t = tgts[Math.min(i, tgts.length - 1)];
+          if (s !== t) {
+            const key = `${s}->${t}`;
+            if (!uniqueEdges.has(key)) {
+              uniqueEdges.set(key, { source: s, target: t, op_type: e.op_type });
+            }
           }
         }
       });
       const activeEdges = Array.from(uniqueEdges.values());
 
-      // 4. 활성 노드 기반 depth 레이아웃 계산 (Flexible Constant Spacing)
-      const DEPTH_SPACING = 150; // 각 단계별 고정 가로 간격
-      
-      // 활성화된 모든 노드들의 고유 depth 값 수집 및 정렬
+      // 4. 활성 노드 기반 depth 레이아웃 계산 (Flexible Spacing)
+      const DEPTH_SPACING = 150;
+      const ROW_SPACING = 55;
+
       const uniqueDepths = Array.from(new Set(activeNodes.map(d => d.depth))).sort((a, b) => a - b);
       const totalGraphWidth = (uniqueDepths.length - 1) * DEPTH_SPACING;
-      
-      // 컨테이너 너비(WIDTH)보다 그래프 전체 가로 길이가 작으면 중앙 정렬, 크면 고정 마진 50px에서 시작
       const startX = (totalGraphWidth < (WIDTH - 100)) ? (WIDTH - totalGraphWidth) / 2 : 50;
 
       const depthGroups = d3.group(activeNodes, d => d.depth);
 
+      // 세로 높이 동적 설정 (최대 행 개수 기준 세로 간격 균등화)
+      const maxRowsInCol = d3.max(uniqueDepths, d => depthGroups.get(d).length) || 1;
+      const dynamicHeight = Math.max(HEIGHT, maxRowsInCol * ROW_SPACING + 100);
+      svg.attr('height', dynamicHeight);
+
+      // 각 열 정렬 후 위치 할당
+      depthGroups.forEach(group => {
+        group.sort((a, b) => {
+          if (a.isSubNode && b.isSubNode) {
+            return a.rowIdx - b.rowIdx;
+          }
+          return a.id.localeCompare(b.id);
+        });
+      });
+
       activeNodes.forEach(node => {
         const group = depthGroups.get(node.depth);
         const idx = group.indexOf(node);
-
         const depthIdx = uniqueDepths.indexOf(node.depth);
-        node.x = startX + (depthIdx * DEPTH_SPACING);
-        node.y = (idx + 1) * (HEIGHT / (group.length + 1));
-      });
 
+        node.x = startX + (depthIdx * DEPTH_SPACING);
+
+        const colTotalHeight = (group.length - 1) * ROW_SPACING;
+        node.y = (dynamicHeight - colTotalHeight) / 2 + (idx * ROW_SPACING);
+      });
 
       const activeNodeMap = Object.fromEntries(activeNodes.map(n => [n.id, n]));
 
@@ -146,7 +283,11 @@ function initDAG() {
       const expandedGroups = Array.from(allGroupKeys).filter(g => !collapsedGroups.has(g) && (groupNodeCounts.get(g) || 0) > 1);
       
       const expandedGroupBounds = expandedGroups.map(key => {
-        const groupNodes = activeNodes.filter(n => getNodeGroup(n.id) === key);
+        const groupNodes = activeNodes.filter(n => {
+          if (getNodeGroup(n.id) === key) return true;
+          if (n.parentTensorId && getNodeGroup(n.parentTensorId) === key) return true;
+          return false;
+        });
         if (groupNodes.length === 0) return null;
         
         const xs = groupNodes.map(n => n.x);
@@ -174,7 +315,12 @@ function initDAG() {
         .style('cursor', 'pointer')
         .on('click', (e, d) => {
           e.stopPropagation();
-          // 클릭 시 다시 축소
+          // 모듈 축소 시 내부의 모든 하위 텐서 확장 및 세로 전체 펼침 상태 초기화
+          const groupNodes = nodes.filter(n => getNodeGroup(n.id) === d.key);
+          groupNodes.forEach(gn => {
+            expandedTensors.delete(gn.id);
+            fullyExpandedTensors.delete(gn.id);
+          });
           collapsedGroups.add(d.key);
           renderGraph();
         });
@@ -185,8 +331,8 @@ function initDAG() {
         .attr('width', d => d.width)
         .attr('height', d => d.height)
         .attr('rx', 8)
-        .attr('fill', 'rgba(30, 41, 59, 0.12)')
-        .attr('stroke', 'rgba(129, 140, 248, 0.25)')
+        .attr('fill', 'rgba(30, 41, 59, 0.08)')
+        .attr('stroke', 'rgba(129, 140, 248, 0.22)')
         .attr('stroke-width', 1.5)
         .attr('stroke-dasharray', '4 4')
         .append('title')
@@ -200,6 +346,68 @@ function initDAG() {
         .attr('font-weight', 600)
         .attr('font-family', 'sans-serif')
         .text(d => `${d.label.toUpperCase()} [-]`);
+
+      // 5-2. 확장된 텐서 박스 그리기
+      const expandedTensorsList = Array.from(expandedTensors);
+      const expandedTensorBounds = expandedTensorsList.map(tensorId => {
+        const subNodes = activeNodes.filter(n => n.parentTensorId === tensorId);
+        if (subNodes.length === 0) return null;
+
+        const xs = subNodes.map(n => n.x);
+        const ys = subNodes.map(n => n.y);
+        const minX = Math.min(...xs);
+        const maxX = Math.max(...xs);
+        const minY = Math.min(...ys);
+        const maxY = Math.max(...ys);
+
+        const origNode = nodes.find(n => n.id === tensorId);
+        const shapeStr = origNode && origNode.output_shape ? `[${origNode.output_shape.join(', ')}]` : '[]';
+
+        return {
+          key: tensorId,
+          label: `${origNode ? origNode.name : tensorId} ${shapeStr}`,
+          x: minX - padding + 5,
+          y: minY - padding - 4,
+          width: (maxX - minX) + 2 * padding - 10,
+          height: (maxY - minY) + 2 * padding + 4
+        };
+      }).filter(b => b !== null);
+
+      const tensorG = g.append('g').attr('class', 'tensor-groups');
+      const tensorElements = tensorG.selectAll('.tensor-container')
+        .data(expandedTensorBounds)
+        .join('g')
+        .attr('class', 'tensor-container')
+        .style('cursor', 'pointer')
+        .on('click', (e, d) => {
+          e.stopPropagation();
+          // 클릭 시 텐서 격자 접기
+          expandedTensors.delete(d.key);
+          fullyExpandedTensors.delete(d.key);
+          renderGraph();
+        });
+
+      tensorElements.append('rect')
+        .attr('x', d => d.x)
+        .attr('y', d => d.y)
+        .attr('width', d => d.width)
+        .attr('height', d => d.height)
+        .attr('rx', 6)
+        .attr('fill', 'rgba(99, 102, 241, 0.03)')
+        .attr('stroke', 'rgba(192, 132, 252, 0.35)')
+        .attr('stroke-width', 1.2)
+        .attr('stroke-dasharray', '2 2')
+        .append('title')
+        .text(d => `클릭 시 텐서 축소: ${d.label}`);
+
+      tensorElements.append('text')
+        .attr('x', d => d.x + 6)
+        .attr('y', d => d.y + 10)
+        .attr('fill', '#c084fc')
+        .attr('font-size', 8)
+        .attr('font-weight', 500)
+        .attr('font-family', 'sans-serif')
+        .text(d => `${d.label} [-]`);
 
       // 6. 연결선(Edge) 렌더링
       g.selectAll('.edge')
@@ -243,54 +451,127 @@ function initDAG() {
         .on('click', (e, d) => {
           e.stopPropagation();
           if (d.isGroupNode) {
-            // 그룹 노드 클릭 시 확장
             collapsedGroups.delete(d.groupKey);
             renderGraph();
+          } else if (d.isOmissionButton) {
+            fullyExpandedTensors.add(d.parentTensorId);
+            renderGraph();
+          } else if (d.isCollapseButton) {
+            fullyExpandedTensors.delete(d.parentTensorId);
+            renderGraph();
+          } else if (d.isSubNode) {
+            g.selectAll('.node circle').attr('stroke', '#334155').attr('stroke-width', 1.5);
+            d3.select(e.currentTarget).selectAll('circle').attr('stroke', '#c084fc').attr('stroke-width', 2.5);
+            showDataPanel(d);
           } else {
-            // 일반 노드 클릭 시 기존 데이터 업데이트
+            const hasGrid = d.parsedShape && (d.parsedShape.w > 1 || d.parsedShape.h > 1);
+            if (hasGrid) {
+              expandedTensors.add(d.id);
+              renderGraph();
+            }
             g.selectAll('.node circle').attr('stroke', '#334155').attr('stroke-width', 1.5).attr('r', n => n.isGroupNode ? 12 : NODE_R);
-            d3.select(e.currentTarget).select('circle').attr('stroke', '#c084fc').attr('stroke-width', 2.5).attr('r', 10);
+            d3.select(e.currentTarget).selectAll('circle').attr('stroke', '#c084fc').attr('stroke-width', 2.5);
             showDataPanel(d);
           }
         })
         .on('mouseover', function(e, d) {
-          const circle = d3.select(this).select('circle');
-          const maxR = d.isGroupNode ? 15 : 10;
-          if (circle.attr('stroke') !== '#c084fc') {
-            circle.attr('stroke', '#818cf8').attr('stroke-width', 2).attr('r', maxR);
-          } else {
-            circle.attr('r', maxR);
+          if (d.isOmissionButton || d.isCollapseButton) {
+            d3.select(this).select('rect').attr('fill', '#312e81');
+            return;
           }
+          const circles = d3.select(this).selectAll('circle');
+          const maxR = d.isGroupNode ? 15 : 10;
+          circles.attr('r', maxR);
         })
         .on('mouseout', function(e, d) {
-          const circle = d3.select(this).select('circle');
-          const origR = d.isGroupNode ? 12 : NODE_R;
-          if (circle.attr('stroke') !== '#c084fc') {
-            circle.attr('stroke', d.isGroupNode ? '#818cf8' : '#334155').attr('stroke-width', d.isGroupNode ? 2.5 : 1.5).attr('r', origR);
-          } else {
-            circle.attr('r', origR);
+          if (d.isOmissionButton || d.isCollapseButton) {
+            d3.select(this).select('rect').attr('fill', '#1e1b4b');
+            return;
           }
+          const circles = d3.select(this).selectAll('circle');
+          const origR = d.isGroupNode ? 12 : NODE_R;
+          circles.attr('r', origR);
         });
 
-      // 원형 노드 추가
-      nodeGroups.append('circle')
-        .attr('r', d => d.isGroupNode ? 12 : NODE_R)
-        .attr('fill', d => getNodeColor(d.op_type))
-        .attr('stroke', d => d.isGroupNode ? '#818cf8' : '#334155')
-        .attr('stroke-width', d => d.isGroupNode ? 2.5 : 1.5)
-        .attr('stroke-dasharray', d => d.isGroupNode ? '3 2' : 'none')
-        .style('transition', 'r 0.15s ease, stroke-width 0.15s ease');
+      // 노드 내부 원 및 스택 드로잉
+      nodeGroups.each(function(d) {
+        const el = d3.select(this);
 
-      // 그룹 노드일 때 중앙에 '+' 텍스트 추가
-      nodeGroups.filter(d => d.isGroupNode)
-        .append('text')
-        .attr('text-anchor', 'middle')
-        .attr('dy', '0.35em')
-        .attr('fill', '#f1f5f9')
-        .attr('font-size', '13px')
-        .attr('font-weight', 'bold')
-        .attr('pointer-events', 'none')
-        .text('+');
+        if (d.isOmissionButton || d.isCollapseButton) {
+          el.append('rect')
+            .attr('x', -45)
+            .attr('y', -11)
+            .attr('width', 90)
+            .attr('height', 22)
+            .attr('rx', 11)
+            .attr('fill', '#1e1b4b')
+            .attr('stroke', '#818cf8')
+            .attr('stroke-width', 1.2)
+            .style('transition', 'fill 0.15s ease');
+
+          el.append('text')
+            .attr('text-anchor', 'middle')
+            .attr('dy', '0.35em')
+            .attr('fill', '#a5b4fc')
+            .attr('font-size', '8px')
+            .attr('font-weight', '600')
+            .attr('font-family', 'sans-serif')
+            .attr('pointer-events', 'none')
+            .text(d.isOmissionButton ? `➕ ${d.totalRows - 10} Omitted` : `➖ Collapse`);
+        } else {
+          const dDim = d.parsedShape ? d.parsedShape.d : 1;
+          const hasGrid = d.parsedShape && (d.parsedShape.w > 1 || d.parsedShape.h > 1);
+
+          if (dDim > 1) {
+            // 3D 겹침 카드 스택 렌더링
+            const sheetsCount = Math.min(dDim, 4);
+            for (let i = sheetsCount - 1; i >= 0; i--) {
+              el.append('circle')
+                .attr('cx', i * 3)
+                .attr('cy', -i * 3)
+                .attr('r', d.isGroupNode ? 12 : NODE_R)
+                .attr('fill', d.isSubNode ? 'rgba(99, 102, 241, 0.85)' : getNodeColor(d.op_type))
+                .attr('stroke', d.isGroupNode ? '#818cf8' : '#334155')
+                .attr('stroke-width', d.isGroupNode ? 2.5 : 1.5)
+                .attr('stroke-dasharray', d.isGroupNode ? '3 2' : 'none')
+                .style('transition', 'r 0.15s ease, stroke-width 0.15s ease');
+            }
+
+            if (hasGrid && !d.isSubNode) {
+              el.append('text')
+                .attr('cx', (sheetsCount - 1) * 3)
+                .attr('cy', -(sheetsCount - 1) * 3)
+                .attr('text-anchor', 'middle')
+                .attr('dy', '0.35em')
+                .attr('fill', '#ffffff')
+                .attr('font-size', '9px')
+                .attr('font-weight', 'bold')
+                .attr('pointer-events', 'none')
+                .text('+');
+            }
+          } else {
+            // 일반 단일 차원 노드
+            el.append('circle')
+              .attr('r', d.isGroupNode ? 12 : NODE_R)
+              .attr('fill', d.isSubNode ? '#1e293b' : getNodeColor(d.op_type))
+              .attr('stroke', d.isGroupNode ? '#818cf8' : '#334155')
+              .attr('stroke-width', d.isGroupNode ? 2.5 : 1.5)
+              .attr('stroke-dasharray', d.isGroupNode ? '3 2' : 'none')
+              .style('transition', 'r 0.15s ease, stroke-width 0.15s ease');
+
+            if (hasGrid && !d.isSubNode) {
+              el.append('text')
+                .attr('text-anchor', 'middle')
+                .attr('dy', '0.35em')
+                .attr('fill', '#ffffff')
+                .attr('font-size', '9px')
+                .attr('font-weight', 'bold')
+                .attr('pointer-events', 'none')
+                .text('+');
+            }
+          }
+        }
+      });
 
       // 툴팁 설정
       nodeGroups.append('title')
@@ -298,14 +579,27 @@ function initDAG() {
           if (d.isGroupNode) {
             return `레이어 그룹: ${d.name}\n클릭 시 내부 노드 확장`;
           }
+          if (d.isOmissionButton) {
+            return `숨겨진 ${d.totalRows - 10}개 행 확장`;
+          }
+          if (d.isCollapseButton) {
+            return "10개 행 요약 상태로 축소";
+          }
+          if (d.isSubNode) {
+            const shapeStr = d.output_shape ? `[${d.output_shape.join('×')}]` : '[]';
+            return `${d.name}\n종류: ${d.op_type}\n원래 형태: ${shapeStr}`;
+          }
           const shapeStr = d.output_shape ? `[${d.output_shape.join('×')}]` : '[]';
-          return `${d.name}\n종류: ${d.op_type}\n대상: ${d.target}\n크기: ${shapeStr}`;
+          const hasGrid = d.parsedShape && (d.parsedShape.w > 1 || d.parsedShape.h > 1);
+          const gridTip = hasGrid ? "\n클릭 시 가로/세로 텐서 격자 확장" : "";
+          return `${d.name}\n종류: ${d.op_type}\n대상: ${d.target}\n크기: ${shapeStr}${gridTip}`;
         });
     }
 
     // 초기 그래프 렌더링 호출
     renderGraph();
     console.log('[my_visualize] ✅ DAG 초기화 완료');
+
 
   } catch(err) {
     console.error('[my_visualize] ❌ DAG 렌더링 오류:', err);
