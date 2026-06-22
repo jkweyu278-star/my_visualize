@@ -22,8 +22,11 @@ class TraceNode:
     output_stats: Dict[str, float] = field(default_factory=dict)
     # {mean, std, min, max, norm}
 
-    # 시각화용 샘플 데이터 (최대 256개 원소)
+    # 시각화용 샘플 데이터 (최대 256개 원소, 균일 샘플링)
     output_sample: List[float] = field(default_factory=list)
+
+    # 원본 순서 그대로의 맨 앞 원소들 (예: "처음 8개 차원")
+    output_head_values: List[float] = field(default_factory=list)
 
     # 2D 히트맵용 데이터 (텐서가 2D 이상일 경우)
     output_heatmap: Optional[List[List[float]]] = None
@@ -45,6 +48,7 @@ class TraceNode:
             'output_dtype': self.output_dtype,
             'stats': self.output_stats,
             'sample': self.output_sample,
+            'head_values': self.output_head_values,
             'heatmap': self.output_heatmap,
             'depth': self.depth,
             'module_type': self.module_type,

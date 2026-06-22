@@ -10,6 +10,7 @@ class TensorSerializer:
 
     MAX_SAMPLE_SIZE = 256      # 샘플 최대 원소 수
     MAX_HEATMAP_DIM = (32, 32) # 히트맵 최대 크기
+    HEAD_VALUES_COUNT = 8      # 패널에 "실제값"으로 보여줄 맨 앞 원소 개수
 
     def _extract_tensor(self, val: Any) -> Optional[torch.Tensor]:
         if isinstance(val, torch.Tensor):
@@ -39,6 +40,7 @@ class TensorSerializer:
         stats = self._compute_stats(t)
         sample = self._get_sample(t)
         heatmap = self._get_heatmap(t)
+        head_values = self._get_head_values(t)
 
         return {
             'shape': shape,
@@ -46,6 +48,7 @@ class TensorSerializer:
             'stats': stats,
             'sample': sample,
             'heatmap': heatmap,
+            'head_values': head_values,
         }
 
     def _compute_stats(self, t: torch.Tensor) -> Dict[str, float]:
@@ -84,6 +87,12 @@ class TensorSerializer:
             flat = flat[indices]
         return [round(float(v), 6) for v in flat.tolist()]
 
+    def _get_head_values(self, t: torch.Tensor) -> List[float]:
+        """원본 순서 그대로 맨 앞 원소들을 반환 (sample()과 달리 균일 샘플링하지
+        않으므로 텐서가 커도 "처음 N개 차원" 그 자체를 보여줄 수 있다)."""
+        flat = t.flatten()[:self.HEAD_VALUES_COUNT]
+        return [round(float(v), 6) for v in flat.tolist()]
+
     def _get_heatmap(self, t: torch.Tensor) -> Optional[List[List[float]]]:
         """2D 이상 텐서를 2D 히트맵으로 압축"""
         # NaN/Inf 필터링
@@ -118,4 +127,4 @@ class TensorSerializer:
         return t.tolist()
 
     def _empty_result(self) -> Dict:
-        return {'shape': [], 'dtype': 'unknown', 'stats': {}, 'sample': [], 'heatmap': None}
+        return {'shape': [], 'dtype': 'unknown', 'stats': {}, 'sample': [], 'heatmap': None, 'head_values': []}

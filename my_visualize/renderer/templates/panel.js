@@ -25,6 +25,9 @@ function showDataPanel(node) {
 
     const heatmapHtml = node.heatmap ? renderHeatmap(node.heatmap) : '';
     const histogramHtml = (node.sample && node.sample.length > 0) ? renderHistogram(node.sample) : '';
+    const headValuesHtml = (node.head_values && node.head_values.length > 0)
+      ? node.head_values.map(v => v.toFixed(4)).join(',  ')
+      : '';
 
     panel.innerHTML = `
       <div style="display: flex; flex-direction: column; gap: 14px; animation: fadeIn 0.3s ease-in-out;">
@@ -56,6 +59,12 @@ function showDataPanel(node) {
           <div style="color:#94a3b8; font-size:10px; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:8px; font-weight:600;">텐서 요약 통계</div>
           ${statsHtml || '<div style="color:#64748b; font-size:11px;">통계 데이터 없음</div>'}
         </div>
+
+        ${headValuesHtml ? `
+        <div style="background:#0f172a; border: 1px solid #1e293b; border-radius:8px; padding:12px;">
+          <div style="color:#94a3b8; font-size:10px; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:8px; font-weight:600;">실제값 (처음 ${node.head_values.length}개 원소)</div>
+          <div style="color:#f1f5f9; font-family:'JetBrains Mono', monospace; font-size:11px; line-height:1.7; word-break:break-all;">[${headValuesHtml}]</div>
+        </div>` : ''}
 
         ${heatmapHtml ? `
         <div style="background:#0f172a; border: 1px solid #1e293b; border-radius:8px; padding:12px;">

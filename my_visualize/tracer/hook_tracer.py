@@ -127,6 +127,7 @@ class HookDataFlowTracer:
                     output_dtype=serialized['dtype'],
                     output_stats=serialized['stats'],
                     output_sample=serialized['sample'],
+                    output_head_values=serialized['head_values'],
                     output_heatmap=serialized['heatmap'],
                     module_type='Input',
                 )
@@ -158,6 +159,7 @@ class HookDataFlowTracer:
                 output_dtype=serialized['dtype'],
                 output_stats=serialized['stats'],
                 output_sample=serialized['sample'],
+                output_head_values=serialized['head_values'],
                 output_heatmap=serialized['heatmap'],
                 module_type=type(module).__name__,
             )
@@ -189,6 +191,7 @@ class HookDataFlowTracer:
                 output_dtype=serialized['dtype'],
                 output_stats=serialized['stats'],
                 output_sample=serialized['sample'],
+                output_head_values=serialized['head_values'],
                 output_heatmap=serialized['heatmap'],
                 module_type='Output',
             )
@@ -230,6 +233,7 @@ class HookDataFlowTracer:
                     output_dtype=serialized['dtype'],
                     output_stats=serialized['stats'],
                     output_sample=serialized['sample'],
+                    output_head_values=serialized['head_values'],
                     output_heatmap=serialized['heatmap'],
                     module_type=merge_name,
                 )

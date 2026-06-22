@@ -47,6 +47,7 @@ class FxDataFlowTracer(torch.fx.Interpreter):
             output_dtype=serialized['dtype'],
             output_stats=serialized['stats'],
             output_sample=serialized['sample'],
+            output_head_values=serialized['head_values'],
             output_heatmap=serialized['heatmap'],
             module_type='Input',
         )
@@ -70,6 +71,7 @@ class FxDataFlowTracer(torch.fx.Interpreter):
             output_dtype=serialized['dtype'],
             output_stats=serialized['stats'],
             output_sample=serialized['sample'],
+            output_head_values=serialized['head_values'],
             output_heatmap=serialized['heatmap'],
             module_type='Output',
         )
@@ -106,6 +108,7 @@ class FxDataFlowTracer(torch.fx.Interpreter):
             output_dtype=serialized['dtype'],
             output_stats=serialized['stats'],
             output_sample=serialized['sample'],
+            output_head_values=serialized['head_values'],
             output_heatmap=serialized['heatmap'],
             module_type=module_type,
         )
