@@ -73,7 +73,9 @@ def my_visualize(
         tracer.register_hooks(input_names=input_names)
         
         try:
-            with torch.no_grad():
+            # 병합 지점(cosine_similarity 등 함수형 연산) 탐지에 grad_fn을 사용하므로
+            # 호출자가 바깥에서 no_grad()로 감싸고 있어도 여기서는 grad 추적을 켠다.
+            with torch.enable_grad():
                 model(*input_values)
             graph_json = tracer.get_trace_graph()
             method = "hook"
