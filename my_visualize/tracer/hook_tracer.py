@@ -31,6 +31,12 @@ class HookDataFlowTracer:
         # 두 개 이상의 독립된 분기(예: 듀얼 타워)가 한 forward 안에서 실행될 때도
         # 정확한 부모-자식 엣지를 복원하기 위함.
         self._tensor_to_node: Dict[int, str] = {}
+        # register_tensors가 끝나면 지역변수(hook의 inp/out)가 스코프를 벗어나
+        # 텐서가 GC될 수 있는데, 그러면 파이썬/PyTorch가 같은 id()/data_ptr()를
+        # 다른 텐서에 재사용해서 엉뚱한 과거 노드와 잘못 매칭될 수 있다(특히 동일
+        # shape 텐서가 빠르게 생성/소멸되는 깊은 모델에서 자주 발생). 트레이싱이
+        # 끝날 때까지 모든 텐서를 강하게 참조해 GC/주소 재사용을 막는다.
+        self._kept_tensors: List[torch.Tensor] = []
 
     def register_hooks(self, input_names: List[str] = None):
         """모든 leaf 모듈 및 메인 모델에 hook 등록"""
@@ -53,6 +59,7 @@ class HookDataFlowTracer:
     def register_tensors(self, obj: Any, node_id: str):
         """obj(텐서 또는 텐서를 담은 dict/list/tuple) 내의 모든 텐서를 node_id가 생성한 것으로 등록"""
         if isinstance(obj, torch.Tensor):
+            self._kept_tensors.append(obj)  # GC로 인한 id()/data_ptr() 재사용 방지
             self._tensor_to_node[id(obj)] = node_id
             try:
                 if obj.device.type != 'meta' and obj.layout == torch.strided:
