@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="my_visualize",
-    version="0.2.0",
+    version="0.2.2",
     packages=find_packages(),
     install_requires=[
         "torch>=1.12.0",

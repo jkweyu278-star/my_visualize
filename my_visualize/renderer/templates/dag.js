@@ -241,40 +241,101 @@ function initDAG() {
       });
       const activeEdges = Array.from(uniqueEdges.values());
 
-      // 4. 활성 노드 기반 depth 레이아웃 계산 (Flexible Spacing)
-      const DEPTH_SPACING = 150;
-      const ROW_SPACING = 55;
+      // 4. 활성 노드 기반 depth 레이아웃 계산 (Flexible Spacing & Branch-Aware Parallel Gaps)
+      const BASE_GAP = 30; // 기본 가로 간격 30px
+      const ROW_SPACING = 10;   // 세로 간격 10px로 축소
+
+      const getBranchGroup = (node) => {
+        const id = node.parentTensorId || node.id;
+        if (id.includes('omics')) return 'omics';
+        if (id.includes('text')) return 'text';
+        return 'other';
+      };
 
       const uniqueDepths = Array.from(new Set(activeNodes.map(d => d.depth))).sort((a, b) => a - b);
-      const totalGraphWidth = (uniqueDepths.length - 1) * DEPTH_SPACING;
-      const startX = (totalGraphWidth < (WIDTH - 100)) ? (WIDTH - totalGraphWidth) / 2 : 50;
-
       const depthGroups = d3.group(activeNodes, d => d.depth);
 
-      // 세로 높이 동적 설정 (최대 행 개수 기준 세로 간격 균등화)
-      const maxRowsInCol = d3.max(uniqueDepths, d => depthGroups.get(d).length) || 1;
-      const dynamicHeight = Math.max(HEIGHT, maxRowsInCol * ROW_SPACING + 100);
-      svg.attr('height', dynamicHeight);
+      // 4-1. X 좌표 계산: 동적 가로 간격 (서브노드/생략버튼 존재 여부에 따라 55px 간격 부여)
+      const colXCoords = new Map();
+      let currentX = 50;
+      uniqueDepths.forEach((d, i) => {
+        colXCoords.set(d, currentX);
+        if (i < uniqueDepths.length - 1) {
+          const colNodes = depthGroups.get(d) || [];
+          const nextColNodes = depthGroups.get(uniqueDepths[i + 1]) || [];
+          const hasExpandedOrButton = colNodes.some(n => n.isSubNode || n.isOmissionButton || n.isCollapseButton);
+          const nextHasExpandedOrButton = nextColNodes.some(n => n.isSubNode || n.isOmissionButton || n.isCollapseButton);
 
-      // 각 열 정렬 후 위치 할당
-      depthGroups.forEach(group => {
-        group.sort((a, b) => {
-          if (a.isSubNode && b.isSubNode) {
-            return a.rowIdx - b.rowIdx;
+          let gap = BASE_GAP;
+          if (hasExpandedOrButton || nextHasExpandedOrButton) {
+            gap = 55;
           }
-          return a.id.localeCompare(b.id);
-        });
+          currentX += gap;
+        }
+      });
+      const totalGraphWidth = currentX - 50;
+      const shiftX = (totalGraphWidth < (WIDTH - 100)) ? (WIDTH - totalGraphWidth) / 2 - 50 : 0;
+
+      // 4-2. Y 좌표 계산: 오믹스/텍스트 병렬 라인을 꺾임 없는 수평 직선으로 배치
+      // 각 브랜치의 최대 수직 높이 구하기
+      let maxOmicsHeight = 0;
+      let maxTextHeight = 0;
+      uniqueDepths.forEach(d => {
+        const group = depthGroups.get(d) || [];
+        const omicsCount = group.filter(n => getBranchGroup(n) === 'omics').length;
+        const textCount = group.filter(n => getBranchGroup(n) === 'text').length;
+        const omicsH = omicsCount > 0 ? (omicsCount - 1) * ROW_SPACING : 0;
+        const textH = textCount > 0 ? (textCount - 1) * ROW_SPACING : 0;
+        if (omicsH > maxOmicsHeight) maxOmicsHeight = omicsH;
+        if (textH > maxTextHeight) maxTextHeight = textH;
       });
 
+      // 병렬 트랙 간 수직 최소 간격 100px 보장을 위한 트랙 중심 이격거리 계산
+      const trackGap = 100 + (maxOmicsHeight + maxTextHeight) / 2;
+      const dynamicHeight = Math.max(HEIGHT, 100 + maxOmicsHeight + maxTextHeight + 100);
+      svg.attr('height', dynamicHeight);
+
+      const yMid = dynamicHeight / 2;
+      const yOmics = yMid - trackGap / 2;
+      const yText = yMid + trackGap / 2;
+      const yMerged = yMid;
+
+      // 각 열(Column)별로 브랜치 단위로 Y 좌표 분배 배치
+      uniqueDepths.forEach(d => {
+        const group = depthGroups.get(d) || [];
+        const omicsNodes = group.filter(n => getBranchGroup(n) === 'omics');
+        const textNodes = group.filter(n => getBranchGroup(n) === 'text');
+        const otherNodes = group.filter(n => getBranchGroup(n) === 'other');
+
+        const sortBranchNodes = (nodesList) => {
+          nodesList.sort((a, b) => {
+            if (a.isSubNode && b.isSubNode) {
+              return a.rowIdx - b.rowIdx;
+            }
+            return a.id.localeCompare(b.id);
+          });
+        };
+        sortBranchNodes(omicsNodes);
+        sortBranchNodes(textNodes);
+        sortBranchNodes(otherNodes);
+
+        const assignBranchY = (nodesList, yCenter) => {
+          const K = nodesList.length;
+          if (K === 0) return;
+          const h = (K - 1) * ROW_SPACING;
+          const startY = yCenter - h / 2;
+          nodesList.forEach((node, idx) => {
+            node.y = startY + idx * ROW_SPACING;
+          });
+        };
+        assignBranchY(omicsNodes, yOmics);
+        assignBranchY(textNodes, yText);
+        assignBranchY(otherNodes, yMerged);
+      });
+
+      // 최종 X 좌표 매핑
       activeNodes.forEach(node => {
-        const group = depthGroups.get(node.depth);
-        const idx = group.indexOf(node);
-        const depthIdx = uniqueDepths.indexOf(node.depth);
-
-        node.x = startX + (depthIdx * DEPTH_SPACING);
-
-        const colTotalHeight = (group.length - 1) * ROW_SPACING;
-        node.y = (dynamicHeight - colTotalHeight) / 2 + (idx * ROW_SPACING);
+        node.x = colXCoords.get(node.depth) + shiftX;
       });
 
       const activeNodeMap = Object.fromEntries(activeNodes.map(n => [n.id, n]));
@@ -349,6 +410,17 @@ function initDAG() {
 
       // 5-2. 확장된 텐서 박스 그리기
       const expandedTensorsList = Array.from(expandedTensors);
+
+      // 텐서명 축약 헬퍼
+      function getShortTensorName(fullName) {
+        if (!fullName) return '';
+        const parts = fullName.split('.');
+        if (parts.length > 2) {
+          return parts.slice(-2).join('.');
+        }
+        return parts[parts.length - 1];
+      }
+
       const expandedTensorBounds = expandedTensorsList.map(tensorId => {
         const subNodes = activeNodes.filter(n => n.parentTensorId === tensorId);
         if (subNodes.length === 0) return null;
@@ -361,11 +433,12 @@ function initDAG() {
         const maxY = Math.max(...ys);
 
         const origNode = nodes.find(n => n.id === tensorId);
+        const shortName = origNode ? getShortTensorName(origNode.name) : tensorId;
         const shapeStr = origNode && origNode.output_shape ? `[${origNode.output_shape.join(', ')}]` : '[]';
 
         return {
           key: tensorId,
-          label: `${origNode ? origNode.name : tensorId} ${shapeStr}`,
+          label: `${shortName} ${shapeStr}`,
           x: minX - padding + 5,
           y: minY - padding - 4,
           width: (maxX - minX) + 2 * padding - 10,
@@ -499,9 +572,9 @@ function initDAG() {
 
         if (d.isOmissionButton || d.isCollapseButton) {
           el.append('rect')
-            .attr('x', -45)
+            .attr('x', -35)
             .attr('y', -11)
-            .attr('width', 90)
+            .attr('width', 70)
             .attr('height', 22)
             .attr('rx', 11)
             .attr('fill', '#1e1b4b')
@@ -517,7 +590,7 @@ function initDAG() {
             .attr('font-weight', '600')
             .attr('font-family', 'sans-serif')
             .attr('pointer-events', 'none')
-            .text(d.isOmissionButton ? `➕ ${d.totalRows - 10} Omitted` : `➖ Collapse`);
+            .text(d.isOmissionButton ? `➕ ${d.totalRows - 10}` : `➖ Collapse`);
         } else {
           const dDim = d.parsedShape ? d.parsedShape.d : 1;
           const hasGrid = d.parsedShape && (d.parsedShape.w > 1 || d.parsedShape.h > 1);

@@ -334,10 +334,10 @@ def main():
     port = 8080
     print(f"Step 2: Starting HTTP server on port {port}...")
     handler = SimpleHTTPRequestHandler
-    socketserver.TCPServer.allow_reuse_address = True
+    socketserver.ThreadingTCPServer.allow_reuse_address = True
     
     try:
-        with socketserver.TCPServer(("", port), handler) as httpd:
+        with socketserver.ThreadingTCPServer(("", port), handler) as httpd:
             print(f"Server is running at: http://localhost:{port}/")
             print("Press Ctrl+C to stop the server.")
             httpd.serve_forever()
