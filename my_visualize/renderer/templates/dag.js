@@ -524,27 +524,42 @@ function initDAG() {
         .text(d => `${d.label} [-]`);
 
       // 6. 연결선(Edge) 렌더링
+      // depth(컬럼) 상 멀리 떨어진 두 노드를 잇는 엣지를 직선으로 그리면 그
+      // 사이 컬럼에 있는 무관한 노드들을 가로질러서 그래프가 어지러워 보인다.
+      // Sugiyama 레이아웃에서 더미 노드로 엣지를 우회시키는 것과 같은 목적으로,
+      // 소스 쪽 트랙을 따라가다가 타겟 바로 앞에서만 굽어지는 곡선으로 그려서
+      // "여러 트랙이 끝에서만 한 점으로 모이는" 모양을 유지한다.
+      const depthColumnIndex = new Map();
+      uniqueDepths.forEach((d, i) => depthColumnIndex.set(d, i));
+
+      function edgePath(s, t, sRadius, tRadius) {
+        const x1 = s.x + sRadius, y1 = s.y;
+        const x2 = t.x - tRadius, y2 = t.y;
+        const sCol = depthColumnIndex.get(s.depth) ?? 0;
+        const tCol = depthColumnIndex.get(t.depth) ?? 0;
+        const span = Math.abs(tCol - sCol);
+
+        if (span <= 1 || y1 === y2) {
+          return `M${x1},${y1} L${x2},${y2}`;
+        }
+        // 소스 y를 오래 유지하다가 타겟 직전(전체 구간의 마지막 8%)에만 굽어지는 베지어
+        const cx1 = x1 + (x2 - x1) * 0.75;
+        const cx2 = x1 + (x2 - x1) * 0.92;
+        return `M${x1},${y1} C${cx1},${y1} ${cx2},${y2} ${x2},${y2}`;
+      }
+
       g.selectAll('.edge')
         .data(activeEdges)
-        .join('line')
+        .join('path')
         .attr('class', 'edge')
-        .attr('x1', d => {
+        .attr('fill', 'none')
+        .attr('d', d => {
           const s = activeNodeMap[d.source];
-          const radius = s && s.isGroupNode ? 12 : NODE_R;
-          return s ? s.x + radius : 0;
-        })
-        .attr('y1', d => {
-          const s = activeNodeMap[d.source];
-          return s ? s.y : 0;
-        })
-        .attr('x2', d => {
           const t = activeNodeMap[d.target];
-          const radius = t && t.isGroupNode ? 12 : NODE_R;
-          return t ? t.x - radius : 0;
-        })
-        .attr('y2', d => {
-          const t = activeNodeMap[d.target];
-          return t ? t.y : 0;
+          if (!s || !t) return '';
+          const sRadius = s.isGroupNode ? 12 : NODE_R;
+          const tRadius = t.isGroupNode ? 12 : NODE_R;
+          return edgePath(s, t, sRadius, tRadius);
         })
         .attr('stroke', '#4f46e5')
         .attr('stroke-width', 2)
@@ -633,56 +648,29 @@ function initDAG() {
             .attr('pointer-events', 'none')
             .text(d.isOmissionButton ? `➕ ${d.totalRows - 10}` : `➖ Collapse`);
         } else {
-          const dDim = d.parsedShape ? d.parsedShape.d : 1;
+          // 노드는 항상 단일 원으로 렌더링한다. (텐서의 3번째 차원이 1보다 클 때
+          // 겹친 카드처럼 그리던 입체 효과는 그래프 토폴로지와 무관한 순수 장식이라
+          // 오히려 구조 파악을 방해하므로 제거했다 — shape 정보는 hasGrid "+" 표시와
+          // 툴팁으로 충분히 전달된다.)
           const hasGrid = d.parsedShape && (d.parsedShape.w > 1 || d.parsedShape.h > 1);
 
-          if (dDim > 1) {
-            // 3D 겹침 카드 스택 렌더링
-            const sheetsCount = Math.min(dDim, 4);
-            for (let i = sheetsCount - 1; i >= 0; i--) {
-              el.append('circle')
-                .attr('cx', i * 3)
-                .attr('cy', -i * 3)
-                .attr('r', d.isGroupNode ? 12 : NODE_R)
-                .attr('fill', d.isSubNode ? 'rgba(99, 102, 241, 0.85)' : getNodeColor(d.op_type))
-                .attr('stroke', d.isGroupNode ? '#818cf8' : '#334155')
-                .attr('stroke-width', d.isGroupNode ? 2.5 : 1.5)
-                .attr('stroke-dasharray', d.isGroupNode ? '3 2' : 'none')
-                .style('transition', 'r 0.15s ease, stroke-width 0.15s ease');
-            }
+          el.append('circle')
+            .attr('r', d.isGroupNode ? 12 : NODE_R)
+            .attr('fill', d.isSubNode ? '#1e293b' : getNodeColor(d.op_type))
+            .attr('stroke', d.isGroupNode ? '#818cf8' : '#334155')
+            .attr('stroke-width', d.isGroupNode ? 2.5 : 1.5)
+            .attr('stroke-dasharray', d.isGroupNode ? '3 2' : 'none')
+            .style('transition', 'r 0.15s ease, stroke-width 0.15s ease');
 
-            if (hasGrid && !d.isSubNode) {
-              el.append('text')
-                .attr('cx', (sheetsCount - 1) * 3)
-                .attr('cy', -(sheetsCount - 1) * 3)
-                .attr('text-anchor', 'middle')
-                .attr('dy', '0.35em')
-                .attr('fill', '#ffffff')
-                .attr('font-size', '9px')
-                .attr('font-weight', 'bold')
-                .attr('pointer-events', 'none')
-                .text('+');
-            }
-          } else {
-            // 일반 단일 차원 노드
-            el.append('circle')
-              .attr('r', d.isGroupNode ? 12 : NODE_R)
-              .attr('fill', d.isSubNode ? '#1e293b' : getNodeColor(d.op_type))
-              .attr('stroke', d.isGroupNode ? '#818cf8' : '#334155')
-              .attr('stroke-width', d.isGroupNode ? 2.5 : 1.5)
-              .attr('stroke-dasharray', d.isGroupNode ? '3 2' : 'none')
-              .style('transition', 'r 0.15s ease, stroke-width 0.15s ease');
-
-            if (hasGrid && !d.isSubNode) {
-              el.append('text')
-                .attr('text-anchor', 'middle')
-                .attr('dy', '0.35em')
-                .attr('fill', '#ffffff')
-                .attr('font-size', '9px')
-                .attr('font-weight', 'bold')
-                .attr('pointer-events', 'none')
-                .text('+');
-            }
+          if (hasGrid && !d.isSubNode) {
+            el.append('text')
+              .attr('text-anchor', 'middle')
+              .attr('dy', '0.35em')
+              .attr('fill', '#ffffff')
+              .attr('font-size', '9px')
+              .attr('font-weight', 'bold')
+              .attr('pointer-events', 'none')
+              .text('+');
           }
         }
       });
