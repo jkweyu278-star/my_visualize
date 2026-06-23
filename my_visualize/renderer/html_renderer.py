@@ -22,7 +22,7 @@ def _detect_environment() -> str:
 
 
 class HtmlRenderer:
-    VERSION = "v0.2.3-base64"
+    VERSION = "v0.3.0-dagre"
 
     def __init__(self):
         # templates 디렉토리의 파일들을 읽어서 로드
@@ -51,6 +51,7 @@ class HtmlRenderer:
 
         css_content = self._read_file('style.css')
         d3_content = self._read_file('d3.v7.min.js')
+        dagre_content = self._read_file('dagre.min.js')
         dag_js = self._read_file('dag.js')
         panel_js = self._read_file('panel.js')
 
@@ -143,8 +144,9 @@ class HtmlRenderer:
             const nodes = {nodes_json};
             const edges = {edges_json};
 
-            // panel.js 와 dag.js를 여기에 인라인 삽입하여 실행
+            // d3 / dagre(레이아웃 엔진) / panel.js / dag.js를 여기에 인라인 삽입하여 실행
             {d3_content}
+            {dagre_content}
             {panel_js}
             {dag_js}
         }})();

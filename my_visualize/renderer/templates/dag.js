@@ -1,5 +1,16 @@
 // DAG 시각화 핵심 로직
 // ============================================================
+//
+// 레이아웃 엔진: dagre (Sugiyama 스타일 레이어드 그래프 알고리즘)
+// - rank 할당(network-simplex), 레이어 내 순서 결정(median heuristic 기반
+//   교차 최소화), 좌표 할당(Brandes-Köpf)을 모두 dagre.layout()이 처리한다.
+// - 이전 구현은 브랜치 이름에 "omics"/"text" 문자열이 포함되는지로 분기를
+//   하드코딩 판별하고, 같은 레이어 내 노드 순서를 알파벳 정렬로만 정했다.
+//   이 두 가지가 "임의의 모델에서 범용적으로 동작하지 않음"과 "엣지가
+//   꼬여 보임" 두 증상의 직접적인 원인이었으므로, 레이어/순서/좌표 계산을
+//   전부 dagre에 위임해 브랜치 개수나 이름에 무관하게 동작하도록 한다.
+// - 레이어 그룹 접기/펼치기, 텐서 격자 확장, 패널 클릭 등 인터랙션은
+//   기존 그대로 유지한다. dagre는 좌표만 계산할 뿐 렌더링에는 관여하지 않는다.
 
 function initDAG() {
   try {
@@ -21,6 +32,7 @@ function initDAG() {
 
     const HEIGHT = 550;
     const NODE_R = 7;
+    const GROUP_R = 12;
     const arrowId = "arrow-" + uniqueId;
 
     // SVG 캔버스 생성
@@ -48,7 +60,7 @@ function initDAG() {
     // 1. 모든 그룹 수집 및 초기화 (최초 1회 전부 collapsed 상태)
     const allGroupKeys = new Set(nodes.map(n => getNodeGroup(n.id)).filter(g => g !== null));
     const collapsedGroups = new Set();
-    
+
     // 2개 이상의 노드를 가진 그룹만 기본적으로 축소 처리
     const groupNodeCounts = d3.rollup(nodes, v => v.length, n => getNodeGroup(n.id));
     allGroupKeys.forEach(key => {
@@ -57,10 +69,9 @@ function initDAG() {
       }
     });
 
-    // 1-2. 텐서 격자 확장 및 세로 생략(Truncation) 상태 관리용 Set 추가
+    // 1-2. 텐서 격자 확장 및 세로 생략(Truncation) 상태 관리용 Set
     const expandedTensors = new Set();
     const fullyExpandedTensors = new Set();
-    let autoAlignEnabled = true;
 
     // 텐서 shape 파서 헬퍼: [W, D, H] 반환
     function parseTensorShape(shape) {
@@ -77,132 +88,159 @@ function initDAG() {
       return { w: shape[0], d: shape[1], h: shape[2] };
     }
 
+    // 텐서가 격자로 확장됐을 때 보이는 행(row) 개수 (생략 버튼/접기 버튼 포함)
+    function getVisibleRowCount(nodeId, h) {
+      if (h <= 10) return h;
+      if (fullyExpandedTensors.has(nodeId)) return h + 1; // + 접기 버튼
+      return 11; // 5 + 생략버튼 + 5
+    }
+
+    function getRowsToGen(nodeId, h) {
+      const rowsToGen = [];
+      if (h <= 10 || fullyExpandedTensors.has(nodeId)) {
+        for (let r = 0; r < h; r++) rowsToGen.push({ r, type: 'normal' });
+        if (h > 10 && fullyExpandedTensors.has(nodeId)) rowsToGen.push({ r: h, type: 'collapse_btn' });
+      } else {
+        for (let r = 0; r < 5; r++) rowsToGen.push({ r, type: 'normal' });
+        rowsToGen.push({ r: 5, type: 'omitted_btn' });
+        for (let r = h - 5; r < h; r++) rowsToGen.push({ r, type: 'normal' });
+      }
+      return rowsToGen;
+    }
+
     const padding = 15;
+    const ROW_SPACING = 10;     // 텐서 격자 내부 행 간격
+    const NODE_D = NODE_R * 2;
+    const GROUP_D = GROUP_R * 2;
+    const CELL_W = 60;          // 텐서 격자 1개 열이 가로로 차지하는 예약 폭
+    const NODE_SEP = 18;        // dagre: 같은 rank 내 노드 간 간격
+    const RANK_SEP = 50;        // dagre: rank(레이어) 간 간격
+
+    // 상위 모듈 그룹으로 축소돼 있을 때의 대표 id (그룹키), 아니면 원래 id
+    function getSkeletonId(origId) {
+      const group = getNodeGroup(origId);
+      if (group && collapsedGroups.has(group)) return group;
+      return origId;
+    }
 
     function renderGraph() {
       // 캔버스 초기화
       g.selectAll('*').remove();
 
-      // 1. 각 오리지널 depth 레벨이 기여하는 가로 폭 오프셋 계산 (최대 텐서 컬럼 확장 수 반영)
-      const maxDepthVal = d3.max(nodes, n => n.depth) || 0;
-      const levelOffsets = new Map();
-      for (let d = 0; d <= maxDepthVal; d++) {
-        const nodesAtDepth = nodes.filter(n => n.depth === d);
-        let maxOffsetForLevel = 0;
-        nodesAtDepth.forEach(n => {
-          const group = getNodeGroup(n.id);
-          const inCollapsedGroup = group && collapsedGroups.has(group);
-          if (!inCollapsedGroup && expandedTensors.has(n.id)) {
-            const { w } = parseTensorShape(n.output_shape);
-            if (w - 1 > maxOffsetForLevel) {
-              maxOffsetForLevel = w - 1;
-            }
-          }
-        });
-        levelOffsets.set(d, maxOffsetForLevel);
-      }
-
-      // 특정 오리지널 depth의 노드가 위치할 최종 depth 인덱스 계산
-      const getShiftedDepth = (origDepth) => {
-        let shifted = origDepth;
-        for (let d = 0; d < origDepth; d++) {
-          shifted += (levelOffsets.get(d) || 0);
-        }
-        return shifted;
-      };
-
-      // 2. 활성 노드 목록 구축 (격자 확장 및 생략 필터 적용)
-      const activeNodes = [];
-      const addedCollapsedGroups = new Set();
+      // 1. 그룹 축소 상태만 반영한 "스켈레톤" 그래프 구성 (텐서 격자 확장은
+      //    스켈레톤 단계에서는 단일 노드의 width/height 예약으로만 반영하고,
+      //    실제 격자 분해는 dagre 레이아웃이 끝난 뒤 2단계에서 수행한다.)
+      const skeleton = new Map(); // skeletonId -> { isGroupNode, origNode?, width, height }
 
       nodes.forEach(node => {
         const group = getNodeGroup(node.id);
         if (group && collapsedGroups.has(group)) {
-          if (!addedCollapsedGroups.has(group)) {
-            addedCollapsedGroups.add(group);
-            activeNodes.push({
-              id: group,
-              name: getGroupLabel(group),
-              op_type: 'call_module',
-              isGroupNode: true,
-              groupKey: group,
-              depth: getShiftedDepth(node.depth),
-              output_shape: null,
-              target: group
-            });
+          if (!skeleton.has(group)) {
+            skeleton.set(group, { isGroupNode: true, groupKey: group, width: GROUP_D, height: GROUP_D });
           }
-          // 가상 노드의 depth를 이 그룹에 속한 최소 depth로 맞춤
-          const virtualNode = activeNodes.find(n => n.id === group);
-          const shiftedDepth = getShiftedDepth(node.depth);
-          if (virtualNode && shiftedDepth < virtualNode.depth) {
-            virtualNode.depth = shiftedDepth;
-          }
-        } else {
-          // 텐서 확장 모드인 경우
+        } else if (!skeleton.has(node.id)) {
+          let width = NODE_D, height = NODE_D;
           if (expandedTensors.has(node.id)) {
-            const { w, d, h } = parseTensorShape(node.output_shape);
-            const shiftedBaseDepth = getShiftedDepth(node.depth);
-
-            for (let c = 0; c < w; c++) {
-              const currentDepth = shiftedBaseDepth + c;
-
-              // 세로 행 목록 생성
-              const rowsToGen = [];
-              if (h <= 10 || fullyExpandedTensors.has(node.id)) {
-                for (let r = 0; r < h; r++) {
-                  rowsToGen.push({ r, type: 'normal' });
-                }
-                if (h > 10 && fullyExpandedTensors.has(node.id)) {
-                  rowsToGen.push({ r: h, type: 'collapse_btn' });
-                }
-              } else {
-                for (let r = 0; r < 5; r++) {
-                  rowsToGen.push({ r, type: 'normal' });
-                }
-                rowsToGen.push({ r: 5, type: 'omitted_btn' });
-                for (let r = h - 5; r < h; r++) {
-                  rowsToGen.push({ r, type: 'normal' });
-                }
-              }
-
-              rowsToGen.forEach(item => {
-                const subNodeId = `${node.id}_col_${c}_row_${item.r}`;
-                activeNodes.push({
-                  id: subNodeId,
-                  parentTensorId: node.id,
-                  name: item.type === 'normal' ? `${node.name}[${c}, ${item.r}]` : '',
-                  op_type: node.op_type,
-                  isSubNode: true,
-                  isOmissionButton: item.type === 'omitted_btn',
-                  isCollapseButton: item.type === 'collapse_btn',
-                  colIdx: c,
-                  rowIdx: item.r,
-                  totalRows: h,
-                  depth: currentDepth,
-                  parsedShape: { w, d, h },
-                  output_shape: node.output_shape,
-                  target: node.target,
-                  stats: node.stats,
-                  heatmap: node.heatmap,
-                  sample: node.sample,
-                  output_dtype: node.output_dtype
-                });
-              });
-            }
-          } else {
-            // 일반 축소 노드
-            activeNodes.push({
-              ...node,
-              depth: getShiftedDepth(node.depth),
-              isGroupNode: false,
-              isSubNode: false,
-              parsedShape: parseTensorShape(node.output_shape)
-            });
+            const { w, h } = parseTensorShape(node.output_shape);
+            const visibleRows = getVisibleRowCount(node.id, h);
+            width = Math.max(NODE_D, w * CELL_W);
+            height = Math.max(NODE_D, visibleRows * ROW_SPACING);
           }
+          skeleton.set(node.id, { isGroupNode: false, origNode: node, width, height });
         }
       });
 
-      // 3. 활성 연결선 목록 구축 및 라우팅 매핑
+      const dagreGraph = new dagre.graphlib.Graph();
+      dagreGraph.setGraph({ rankdir: 'LR', nodesep: NODE_SEP, ranksep: RANK_SEP });
+      dagreGraph.setDefaultEdgeLabel(() => ({}));
+      skeleton.forEach((entry, sid) => {
+        dagreGraph.setNode(sid, { width: entry.width, height: entry.height });
+      });
+
+      const skeletonEdgeKeys = new Set();
+      edges.forEach(e => {
+        const s = getSkeletonId(e.source);
+        const t = getSkeletonId(e.target);
+        if (s === t || !skeleton.has(s) || !skeleton.has(t)) return;
+        const key = s + '->' + t;
+        if (!skeletonEdgeKeys.has(key)) {
+          skeletonEdgeKeys.add(key);
+          dagreGraph.setEdge(s, t);
+        }
+      });
+
+      dagre.layout(dagreGraph);
+
+      // 2. 스켈레톤 좌표를 기반으로 실제 화면에 그릴 활성 노드 목록 구축.
+      //    (그룹 가상 노드는 그대로, 텐서 확장 노드는 예약된 영역 안에서
+      //    열/행 격자로 분해한다.)
+      const activeNodes = [];
+
+      skeleton.forEach((entry, sid) => {
+        const dn = dagreGraph.node(sid);
+        if (entry.isGroupNode) {
+          activeNodes.push({
+            id: sid,
+            name: getGroupLabel(sid),
+            op_type: 'call_module',
+            isGroupNode: true,
+            groupKey: sid,
+            output_shape: null,
+            target: sid,
+            x: dn.x,
+            y: dn.y,
+          });
+          return;
+        }
+
+        const node = entry.origNode;
+        if (expandedTensors.has(node.id)) {
+          const { w, h } = parseTensorShape(node.output_shape);
+          const leftX = dn.x - entry.width / 2 + CELL_W / 2;
+
+          for (let c = 0; c < w; c++) {
+            const colX = leftX + c * CELL_W;
+            const rowsToGen = getRowsToGen(node.id, h);
+            const topY = dn.y - ((rowsToGen.length - 1) * ROW_SPACING) / 2;
+
+            rowsToGen.forEach((item, rIdx) => {
+              const subNodeId = `${node.id}_col_${c}_row_${item.r}`;
+              activeNodes.push({
+                id: subNodeId,
+                parentTensorId: node.id,
+                name: item.type === 'normal' ? `${node.name}[${c}, ${item.r}]` : '',
+                op_type: node.op_type,
+                isSubNode: true,
+                isOmissionButton: item.type === 'omitted_btn',
+                isCollapseButton: item.type === 'collapse_btn',
+                colIdx: c,
+                rowIdx: item.r,
+                totalRows: h,
+                parsedShape: { w, d: 1, h },
+                output_shape: node.output_shape,
+                target: node.target,
+                stats: node.stats,
+                heatmap: node.heatmap,
+                sample: node.sample,
+                output_dtype: node.output_dtype,
+                x: colX,
+                y: topY + rIdx * ROW_SPACING,
+              });
+            });
+          }
+        } else {
+          activeNodes.push({
+            ...node,
+            isGroupNode: false,
+            isSubNode: false,
+            parsedShape: parseTensorShape(node.output_shape),
+            x: dn.x,
+            y: dn.y,
+          });
+        }
+      });
+
+      // 3. 활성 연결선 목록 구축 (그룹/텐서 확장에 따른 엣지 재배선)
       const getActiveNodeIdsForLink = (origNodeId, first) => {
         const group = getNodeGroup(origNodeId);
         if (group && collapsedGroups.has(group)) {
@@ -242,148 +280,31 @@ function initDAG() {
       });
       const activeEdges = Array.from(uniqueEdges.values());
 
-      // 4. 활성 노드 기반 depth 레이아웃 계산 (Flexible Spacing & Branch-Aware Parallel Gaps)
-      const BASE_GAP = 30; // 기본 가로 간격 30px
-      const ROW_SPACING = 10;   // 세로 간격 10px로 축소
+      // 4. 전체 콘텐츠 바운딩 박스를 구해 캔버스 크기/중앙 정렬 보정
+      // (dagre 원본 좌표 → 화면 좌표 변환량. 엣지의 dagre 경로점에도 동일하게 적용해야 한다.)
+      let shiftX = 0, shiftY = 0;
+      if (activeNodes.length > 0) {
+        const xs = activeNodes.map(n => n.x);
+        const ys = activeNodes.map(n => n.y);
+        const minX = Math.min(...xs), maxX = Math.max(...xs);
+        const minY = Math.min(...ys), maxY = Math.max(...ys);
 
-      const getBranchGroup = (node) => {
-        const id = node.parentTensorId || node.id;
-        if (id.includes('omics')) return 'omics';
-        if (id.includes('text')) return 'text';
-        return 'other';
-      };
-
-      const uniqueDepths = Array.from(new Set(activeNodes.map(d => d.depth))).sort((a, b) => a - b);
-      const depthGroups = d3.group(activeNodes, d => d.depth);
-
-      // 4-1. X 좌표 계산: 동적 가로 간격 (서브노드/생략버튼 존재 여부에 따라 55px 간격 부여)
-      const colXCoords = new Map();
-      let currentX = 50;
-      uniqueDepths.forEach((d, i) => {
-        colXCoords.set(d, currentX);
-        if (i < uniqueDepths.length - 1) {
-          const colNodes = depthGroups.get(d) || [];
-          const nextColNodes = depthGroups.get(uniqueDepths[i + 1]) || [];
-          const hasExpandedOrButton = colNodes.some(n => n.isSubNode || n.isOmissionButton || n.isCollapseButton);
-          const nextHasExpandedOrButton = nextColNodes.some(n => n.isSubNode || n.isOmissionButton || n.isCollapseButton);
-
-          let gap = BASE_GAP;
-          if (hasExpandedOrButton || nextHasExpandedOrButton) {
-            gap = 55;
-          }
-          currentX += gap;
-        }
-      });
-      const totalGraphWidth = currentX - 50;
-      const shiftX = (totalGraphWidth < (WIDTH - 100)) ? (WIDTH - totalGraphWidth) / 2 - 50 : 0;
-
-      // 4-2. Y 좌표 계산: 오믹스/텍스트 병렬 라인을 꺾임 없는 수평 직선으로 배치
-      if (autoAlignEnabled) {
-        // 각 브랜치의 최대 수직 높이 구하기
-        let maxOmicsHeight = 0;
-        let maxTextHeight = 0;
-        uniqueDepths.forEach(d => {
-          const group = depthGroups.get(d) || [];
-          const omicsCount = group.filter(n => getBranchGroup(n) === 'omics').length;
-          const textCount = group.filter(n => getBranchGroup(n) === 'text').length;
-          const omicsH = omicsCount > 0 ? (omicsCount - 1) * ROW_SPACING : 0;
-          const textH = textCount > 0 ? (textCount - 1) * ROW_SPACING : 0;
-          if (omicsH > maxOmicsHeight) maxOmicsHeight = omicsH;
-          if (textH > maxTextHeight) maxTextHeight = textH;
-        });
-
-        // 병렬 트랙 간 수직 최소 간격 100px 보장을 위한 트랙 중심 이격거리 계산
-        const trackGap = 100 + (maxOmicsHeight + maxTextHeight) / 2;
-        const dynamicHeight = Math.max(HEIGHT, 100 + maxOmicsHeight + maxTextHeight + 100);
+        const graphWidth = (maxX - minX) + 100;
+        const graphHeight = (maxY - minY) + 100;
+        const dynamicHeight = Math.max(HEIGHT, graphHeight);
         svg.attr('height', dynamicHeight);
 
-        const yMid = dynamicHeight / 2;
-        const yOmics = yMid - trackGap / 2;
-        const yText = yMid + trackGap / 2;
-        const yMerged = yMid;
+        shiftX = (graphWidth < WIDTH) ? (WIDTH / 2 - (minX + maxX) / 2) : (50 - minX);
+        shiftY = dynamicHeight / 2 - (minY + maxY) / 2;
 
-        // 각 열(Column)별로 브랜치 단위로 Y 좌표 분배 배치
-        uniqueDepths.forEach(d => {
-          const group = depthGroups.get(d) || [];
-          const omicsNodes = group.filter(n => getBranchGroup(n) === 'omics');
-          const textNodes = group.filter(n => getBranchGroup(n) === 'text');
-          const otherNodes = group.filter(n => getBranchGroup(n) === 'other');
-
-          const sortBranchNodes = (nodesList) => {
-            nodesList.sort((a, b) => {
-              if (a.isSubNode && b.isSubNode) {
-                return a.rowIdx - b.rowIdx;
-              }
-              return a.id.localeCompare(b.id);
-            });
-          };
-          sortBranchNodes(omicsNodes);
-          sortBranchNodes(textNodes);
-          sortBranchNodes(otherNodes);
-
-          const assignBranchY = (nodesList, yCenter) => {
-            const K = nodesList.length;
-            if (K === 0) return;
-            const h = (K - 1) * ROW_SPACING;
-            const startY = yCenter - h / 2;
-            nodesList.forEach((node, idx) => {
-              node.y = startY + idx * ROW_SPACING;
-            });
-          };
-          assignBranchY(omicsNodes, yOmics);
-          assignBranchY(textNodes, yText);
-          assignBranchY(otherNodes, yMerged);
-        });
-      } else {
-        // 기존 디폴트 배치 (컬럼 단위로 세로 중앙 정렬)
-        const colHeights = new Map();
-        uniqueDepths.forEach(d => {
-          const group = depthGroups.get(d) || [];
-          group.sort((a, b) => {
-            if (a.isSubNode && b.isSubNode) {
-              return a.rowIdx - b.rowIdx;
-            }
-            return a.id.localeCompare(b.id);
-          });
-
-          let currentY = 0;
-          const coords = [];
-          group.forEach((node, idx) => {
-            if (idx > 0) {
-              const prevNode = group[idx - 1];
-              const prevBranch = getBranchGroup(prevNode);
-              const currBranch = getBranchGroup(node);
-              const gap = (prevBranch !== currBranch && prevBranch !== 'other' && currBranch !== 'other') ? 100 : ROW_SPACING;
-              currentY += gap;
-            }
-            coords.push(currentY);
-          });
-          colHeights.set(d, { height: currentY, coords: coords });
-        });
-
-        const maxColHeight = d3.max(Array.from(colHeights.values()), h => h.height) || 0;
-        const dynamicHeight = Math.max(HEIGHT, maxColHeight + 100);
-        svg.attr('height', dynamicHeight);
-
-        activeNodes.forEach(node => {
-          const group = depthGroups.get(node.depth) || [];
-          const idx = group.indexOf(node);
-          const colInfo = colHeights.get(node.depth);
-          const offset = (dynamicHeight - colInfo.height) / 2;
-          node.y = offset + colInfo.coords[idx];
-        });
+        activeNodes.forEach(n => { n.x += shiftX; n.y += shiftY; });
       }
-
-      // 최종 X 좌표 매핑
-      activeNodes.forEach(node => {
-        node.x = colXCoords.get(node.depth) + shiftX;
-      });
 
       const activeNodeMap = Object.fromEntries(activeNodes.map(n => [n.id, n]));
 
       // 5. 확장된(그룹이 해제된) 레이어 박스 그리기
       const expandedGroups = Array.from(allGroupKeys).filter(g => !collapsedGroups.has(g) && (groupNodeCounts.get(g) || 0) > 1);
-      
+
       const expandedGroupBounds = expandedGroups.map(key => {
         const groupNodes = activeNodes.filter(n => {
           if (getNodeGroup(n.id) === key) return true;
@@ -391,7 +312,7 @@ function initDAG() {
           return false;
         });
         if (groupNodes.length === 0) return null;
-        
+
         const xs = groupNodes.map(n => n.x);
         const ys = groupNodes.map(n => n.y);
         const minX = Math.min(...xs);
@@ -524,28 +445,45 @@ function initDAG() {
         .text(d => `${d.label} [-]`);
 
       // 6. 연결선(Edge) 렌더링
-      // depth(컬럼) 상 멀리 떨어진 두 노드를 잇는 엣지를 직선으로 그리면 그
-      // 사이 컬럼에 있는 무관한 노드들을 가로질러서 그래프가 어지러워 보인다.
-      // Sugiyama 레이아웃에서 더미 노드로 엣지를 우회시키는 것과 같은 목적으로,
-      // 소스 쪽 트랙을 따라가다가 타겟 바로 앞에서만 굽어지는 곡선으로 그려서
-      // "여러 트랙이 끝에서만 한 점으로 모이는" 모양을 유지한다.
-      const depthColumnIndex = new Map();
-      uniqueDepths.forEach((d, i) => depthColumnIndex.set(d, i));
+      // 두 끝점이 모두 "스켈레톤" 노드(그룹/일반 노드, 텐서 격자로 분해되지
+      // 않은 노드)인 엣지는 dagre가 계산한 다중 경로점(더미 노드 경유)을 그대로
+      // 사용한다. dagre는 레이어를 건너뛰는 엣지를 더미 노드로 분할해 경로를
+      // 잡아주므로, 중간에 있는 무관한 노드를 가로지르지 않고 자연스럽게
+      // 우회한다. 텐서 격자로 분해된 서브노드와 연결되는 짧은 재배선 엣지는
+      // 항상 인접한 두 좌표 사이의 직선으로 충분하다.
+      const skeletonEdgePoints = new Map();
+      dagreGraph.edges().forEach(e => {
+        skeletonEdgePoints.set(e.v + '->' + e.w, dagreGraph.edge(e).points);
+      });
+
+      const lineGen = d3.line().x(p => p.x).y(p => p.y).curve(d3.curveMonotoneX);
+
+      function trimEndpoints(pts, sRadius, tRadius) {
+        if (pts.length < 2) return pts;
+        const out = pts.map(p => ({ x: p.x, y: p.y }));
+        const a = out[0], b = out[1];
+        const dx1 = b.x - a.x, dy1 = b.y - a.y, len1 = Math.hypot(dx1, dy1) || 1;
+        out[0] = { x: a.x + dx1 / len1 * sRadius, y: a.y + dy1 / len1 * sRadius };
+        const n = out.length;
+        const c = out[n - 2], d = out[n - 1];
+        const dx2 = d.x - c.x, dy2 = d.y - c.y, len2 = Math.hypot(dx2, dy2) || 1;
+        out[n - 1] = { x: d.x - dx2 / len2 * tRadius, y: d.y - dy2 / len2 * tRadius };
+        return out;
+      }
 
       function edgePath(s, t, sRadius, tRadius) {
-        const x1 = s.x + sRadius, y1 = s.y;
-        const x2 = t.x - tRadius, y2 = t.y;
-        const sCol = depthColumnIndex.get(s.depth) ?? 0;
-        const tCol = depthColumnIndex.get(t.depth) ?? 0;
-        const span = Math.abs(tCol - sCol);
-
-        if (span <= 1 || y1 === y2) {
-          return `M${x1},${y1} L${x2},${y2}`;
+        const isSkeletonNode = (n) => !n.isSubNode && !n.isOmissionButton && !n.isCollapseButton;
+        let points;
+        const lookup = skeletonEdgePoints.get(s.id + '->' + t.id);
+        if (isSkeletonNode(s) && isSkeletonNode(t) && lookup) {
+          // dagre 경로점은 4단계의 shiftX/shiftY 보정 이전 좌표이므로,
+          // 노드 좌표에 적용한 것과 동일한 전역 이동량을 그대로 더해 맞춘다.
+          points = lookup.map(p => ({ x: p.x + shiftX, y: p.y + shiftY }));
+        } else {
+          points = [{ x: s.x, y: s.y }, { x: t.x, y: t.y }];
         }
-        // 소스 y를 오래 유지하다가 타겟 직전(전체 구간의 마지막 8%)에만 굽어지는 베지어
-        const cx1 = x1 + (x2 - x1) * 0.75;
-        const cx2 = x1 + (x2 - x1) * 0.92;
-        return `M${x1},${y1} C${cx1},${y1} ${cx2},${y2} ${x2},${y2}`;
+        points = trimEndpoints(points, sRadius, tRadius);
+        return lineGen(points);
       }
 
       g.selectAll('.edge')
@@ -557,8 +495,8 @@ function initDAG() {
           const s = activeNodeMap[d.source];
           const t = activeNodeMap[d.target];
           if (!s || !t) return '';
-          const sRadius = s.isGroupNode ? 12 : NODE_R;
-          const tRadius = t.isGroupNode ? 12 : NODE_R;
+          const sRadius = s.isGroupNode ? GROUP_R : NODE_R;
+          const tRadius = t.isGroupNode ? GROUP_R : NODE_R;
           return edgePath(s, t, sRadius, tRadius);
         })
         .attr('stroke', '#4f46e5')
@@ -598,7 +536,7 @@ function initDAG() {
               expandedTensors.add(d.id);
               renderGraph();
             }
-            g.selectAll('.node circle').attr('stroke', '#334155').attr('stroke-width', 1.5).attr('r', n => n.isGroupNode ? 12 : NODE_R);
+            g.selectAll('.node circle').attr('stroke', '#334155').attr('stroke-width', 1.5).attr('r', n => n.isGroupNode ? GROUP_R : NODE_R);
             d3.select(e.currentTarget).selectAll('circle').attr('stroke', '#c084fc').attr('stroke-width', 2.5);
             showDataPanel(d);
           }
@@ -618,11 +556,11 @@ function initDAG() {
             return;
           }
           const circles = d3.select(this).selectAll('circle');
-          const origR = d.isGroupNode ? 12 : NODE_R;
+          const origR = d.isGroupNode ? GROUP_R : NODE_R;
           circles.attr('r', origR);
         });
 
-      // 노드 내부 원 및 스택 드로잉
+      // 노드 내부 원 드로잉
       nodeGroups.each(function(d) {
         const el = d3.select(this);
 
@@ -648,14 +586,12 @@ function initDAG() {
             .attr('pointer-events', 'none')
             .text(d.isOmissionButton ? `➕ ${d.totalRows - 10}` : `➖ Collapse`);
         } else {
-          // 노드는 항상 단일 원으로 렌더링한다. (텐서의 3번째 차원이 1보다 클 때
-          // 겹친 카드처럼 그리던 입체 효과는 그래프 토폴로지와 무관한 순수 장식이라
-          // 오히려 구조 파악을 방해하므로 제거했다 — shape 정보는 hasGrid "+" 표시와
-          // 툴팁으로 충분히 전달된다.)
+          // 노드는 항상 단일 원으로 렌더링한다. shape 정보는 hasGrid "+" 표시와
+          // 툴팁으로 충분히 전달된다.
           const hasGrid = d.parsedShape && (d.parsedShape.w > 1 || d.parsedShape.h > 1);
 
           el.append('circle')
-            .attr('r', d.isGroupNode ? 12 : NODE_R)
+            .attr('r', d.isGroupNode ? GROUP_R : NODE_R)
             .attr('fill', d.isSubNode ? '#1e293b' : getNodeColor(d.op_type))
             .attr('stroke', d.isGroupNode ? '#818cf8' : '#334155')
             .attr('stroke-width', d.isGroupNode ? 2.5 : 1.5)
@@ -696,43 +632,6 @@ function initDAG() {
           const gridTip = hasGrid ? "\n클릭 시 가로/세로 텐서 격자 확장" : "";
           return `${d.name}\n종류: ${d.op_type}\n대상: ${d.target}\n크기: ${shapeStr}${gridTip}`;
         });
-
-      // 8. 상단 컨트롤 그룹 그리기 (Auto Align 토글 버튼)
-      svg.selectAll('.controls-group').remove();
-      const controlsG = svg.append('g')
-        .attr('class', 'controls-group')
-        .attr('transform', `translate(${WIDTH - 110}, 15)`)
-        .style('cursor', 'pointer')
-        .on('click', (e) => {
-          e.stopPropagation();
-          autoAlignEnabled = !autoAlignEnabled;
-          renderGraph();
-        });
-
-      controlsG.append('rect')
-        .attr('width', 95)
-        .attr('height', 24)
-        .attr('rx', 12)
-        .attr('fill', autoAlignEnabled ? 'rgba(79, 70, 229, 0.15)' : 'rgba(30, 41, 59, 0.6)')
-        .attr('stroke', autoAlignEnabled ? '#818cf8' : '#334155')
-        .attr('stroke-width', 1.2)
-        .style('transition', 'all 0.15s ease');
-
-      controlsG.append('circle')
-        .attr('cx', 12)
-        .attr('cy', 12)
-        .attr('r', 4)
-        .attr('fill', autoAlignEnabled ? '#10b981' : '#64748b');
-
-      controlsG.append('text')
-        .attr('x', 24)
-        .attr('y', 12)
-        .attr('dy', '0.35em')
-        .attr('fill', autoAlignEnabled ? '#a5b4fc' : '#94a3b8')
-        .attr('font-size', '9px')
-        .attr('font-weight', '600')
-        .attr('font-family', 'sans-serif')
-        .text('Auto Align');
     }
 
     // 초기 그래프 렌더링 호출
