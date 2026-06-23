@@ -25,10 +25,16 @@ class HookDataFlowTracer:
         self.serializer = serializer
         self.trace_nodes: List[TraceNode] = []
         self._hooks = []
-        self._execution_order: List[str] = []
+        # 아직 그 어떤 노드의 부모로도 쓰이지 않은("소비되지 않은") 노드 id들.
+        # 텐서 동일성 매칭이 실패했을 때 이 목록 전체를 부모로 잡는다(아래
+        # _make_hook 설명 참고). q_proj/k_proj/v_proj처럼 형제 leaf 모듈 여러 개의
+        # 출력이 hook이 못 잡는 함수형 연산(+, torch.cat 등)으로 합쳐진 뒤 다음
+        # 모듈에 들어오는 패턴에서, "마지막 하나만" 부모로 추정하면 나머지 형제들이
+        # 영원히 고아로 남아 무관한 노드들과 거짓 Merge로 뭉쳐버리는 문제를 막는다.
+        self._dangling: List[str] = []
         # forward()에 한 번에 들어온 최상위 입력들(예: omics_feat, text_feat) 중
         # 아직 그 어떤 노드의 부모로도 쓰이지 않은 것들. 텐서 동일성 매칭이 실패했을
-        # 때의 폴백에서 이 목록을 _execution_order보다 먼저 확인한다 (_make_hook 참고).
+        # 때의 폴백에서 이 목록을 _dangling보다 먼저 확인한다 (_make_hook 참고).
         self._pending_top_level_inputs: List[str] = []
         # 텐서 객체 identity(id) 및 메모리 주소(data_ptr) -> 이 텐서를 만든 노드 id.
         # 실행 순서가 아니라 실제로 어떤 노드의 출력 텐서가 입력으로 쓰였는지를 추적해
@@ -173,11 +179,13 @@ class HookDataFlowTracer:
             # "직전에 실행된 노드"는 다른 분기의 노드일 수 있으므로 신뢰할 수 없다.
             matched_inputs = self.find_inputs(inp)
             if matched_inputs:
-                # 실제로 어떤 최상위 입력에 닿았다면 그 입력은 더 이상 "아직
-                # 아무도 안 쓴 입력"이 아니므로 폴백 후보에서 제거해둔다.
+                # 실제로 어떤 노드에 닿았다면 그 노드는 더 이상 "아직 아무도 안
+                # 쓴" 상태가 아니므로 폴백 후보에서 제거해둔다.
                 for m in matched_inputs:
                     if m in self._pending_top_level_inputs:
                         self._pending_top_level_inputs.remove(m)
+                    if m in self._dangling:
+                        self._dangling.remove(m)
             elif self._pending_top_level_inputs:
                 # 텐서 추적 실패(예: features[bool_mask] 같은 불리언 마스크
                 # 인덱싱은 새 텐서를 복사해내므로 추적이 끊긴다) 시의 폴백.
@@ -185,17 +193,23 @@ class HookDataFlowTracer:
                 # 들어온 경우, 아직 아무 자식도 못 찾은 "pending" 입력이 남아있다면
                 # "그냥 마지막에 실행된 노드"보다 "지금 처리를 시작했는데 텐서
                 # 추적에만 실패한 입력"일 가능성이 훨씬 높다. 그래서 pending을
-                # 전역 실행 순서보다 먼저 시도해, 서로 다른 분기의 노드가 엉뚱하게
+                # dangling 목록보다 먼저 시도해, 서로 다른 분기의 노드가 엉뚱하게
                 # 이어지는 것(예: omics 쪽 첫 노드가 text_feat에 잘못 붙는 것)을 막는다.
                 matched_inputs = [self._pending_top_level_inputs.pop(0)]
-            elif self._execution_order:
-                # 단일 분기 모델에서 in-place 연산 등으로 텐서 추적이 끊긴
-                # 경우에 한해서만 실행 순서 기반 추정으로 폴백
-                matched_inputs = [self._execution_order[-1]]
+            elif self._dangling:
+                # 텐서 추적 실패의 또 다른 흔한 패턴: q_proj/k_proj/v_proj처럼
+                # 형제 leaf 모듈 여러 개의 출력이 hook이 못 잡는 함수형 연산(덧셈,
+                # torch.cat 등)으로 합쳐진 뒤 다음 모듈에 들어오는 경우. 이때
+                # "마지막에 실행된 노드 하나"만 부모로 추정하면 나머지 형제들은
+                # 영원히 소비되지 않은 채로 남아, 끝에서 전부 무관한 다른 가지들과
+                # 함께 거짓 Merge 노드로 뭉쳐버린다. 그래서 아직 소비되지 않은
+                # 노드를 "전부" 부모로 잡아 진짜 다대일 합류를 복원한다.
+                matched_inputs = list(self._dangling)
+                self._dangling.clear()
             node.input_node_ids = matched_inputs
 
             self.trace_nodes.append(node)
-            self._execution_order.append(name)
+            self._dangling.append(name)
             self.register_tensors(out, name)
         return hook
 
@@ -258,18 +272,16 @@ class HookDataFlowTracer:
                     module_type=merge_name,
                 )
                 self.trace_nodes.append(merge_node)
-                self._execution_order.append(merge_id)
                 final_parents = [merge_id]
 
             if not final_parents:
                 if self._pending_top_level_inputs:
                     final_parents = [self._pending_top_level_inputs.pop(0)]
-                elif self._execution_order:
-                    final_parents = [self._execution_order[-1]]
+                elif self._dangling:
+                    final_parents = [self._dangling[-1]]
 
             node.input_node_ids = final_parents
             self.trace_nodes.append(node)
-            self._execution_order.append("output")
         return post_hook
 
     def remove_hooks(self):
